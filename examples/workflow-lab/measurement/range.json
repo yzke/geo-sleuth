@@ -1,0 +1,22 @@
+{
+  "image": {
+    "width": 1600,
+    "height": 1200,
+    "crop": "none",
+    "source": "Synthetic full sensor frame",
+    "geometry": "rectilinear_square_pixels",
+    "pixel_frame": "exif_transposed"
+  },
+  "camera": {
+    "focal_px": [1190, 1210],
+    "focal_source": "Synthetic calibration for the current image",
+    "calibration_frame": "current_image"
+  },
+  "target": {
+    "size_m": [1.98, 2.02],
+    "size_px": [118, 122],
+    "size_source": "Synthetic object dimension with stated uncertainty",
+    "pixel_source": "Synthetic frontoparallel projection; manual marking uncertainty",
+    "geometry": "frontoparallel"
+  }
+}

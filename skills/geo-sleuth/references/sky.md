@@ -41,10 +41,12 @@ In order of reliability:
 `sun elevation angle = atan(object height / shadow length)`. Only the ratio is needed, not real sizes.
 
 - Pick **vertical** objects (wall corners, utility poles, lamp posts, vertical wall edges) and their shadows on **flat** ground.
-- Prefer shadows parallel to the image plane (spread sideways); a shadow pointing toward or away from the lens is heavily foreshortened, so pick another object.
+- Prefer shadows spread sideways when using the simple ratio. For a shadow pointing toward or away from the lens, use the calibrated ground-plane reconstruction in [measurement-workflow.md](measurement-workflow.md); do not divide the raw pixel lengths. Without enough focal, camera-attitude and height information, choose another object or keep a broad hypothesis.
 - For wide-angle photos, first correct barrel distortion, then draw guide lines along the perspective direction to measure (the v001 creator corrected first, then measured).
-- In the same image, the shadows of vertical objects on flat ground must be parallel to each other. Not parallel = uneven ground, a non-vertical object, an artificial light source or a composite image.
+- On one flat ground plane, sun-shadow directions are parallel in the world but generally converge toward a common vanishing point in a perspective image. Test their ground-plane directions or vanishing-point consistency; nonparallel image segments alone do not establish uneven ground or manipulation.
 - Measure with at least two objects and take a range. A 20% shadow-length error gives a 6–8° elevation-angle error near 45°.
+
+The calibrated workflow returns a conditional sun-elevation interval, not a location. Pass the interval to the existing `sun.py locate`/`when` workflow with independently sourced date, clock time and time zone. If the capture date changes, rerun all dependent astronomy and heading calculations; retain both hypotheses until the date is resolved. A timestamp on a chat message is not the photo's capture timestamp.
 
 ```bash
 uv run scripts/sun.py ratio --shadow 1.2           # 1:1.2 → 39.8°

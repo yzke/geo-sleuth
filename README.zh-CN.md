@@ -36,10 +36,14 @@
 
 ---
 
+## 本 fork 的补充
+
+本仓库 fork 自 [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth)，新增[已知尺寸测距与标定阴影反算](skills/geo-sleuth/references/measurement-workflow.md)，以及[街景获取、有效性检查与排序接入](skills/geo-sleuth/references/street-workflow.md)。两条流程均返回结构化结果、计算假设和明确的失败状态。详见[测试报告](docs/workflow-lab-report.md)与可选的[独立 DSH 实验环境](lab/README.md)。真实照片测距精度及完整视觉匹配仍需单独验证。
+
 ## 快速开始
 
 ```bash
-npx skills add Oldcircle/geo-sleuth
+npx skills add yzke/geo-sleuth
 ```
 
 按提示勾选你用的 agent。然后把一张照片交给你的 agent，说：
@@ -173,13 +177,13 @@ geo-sleuth 是一个标准的 [Agent Skill](https://agentskills.io)：一个文�
 **一条命令，给全部六个 agent 装到用户级目录：**
 
 ```bash
-npx skills add Oldcircle/geo-sleuth -g -a claude-code -a codex -a cursor -a gemini-cli -a opencode -a github-copilot -y
+npx skills add yzke/geo-sleuth -g -a claude-code -a codex -a cursor -a gemini-cli -a opencode -a github-copilot -y
 ```
 
 **手动安装：**
 
 ```bash
-git clone https://github.com/Oldcircle/geo-sleuth
+git clone https://github.com/yzke/geo-sleuth
 mkdir -p ~/.agents/skills ~/.claude/skills
 cp -r geo-sleuth/skills/geo-sleuth ~/.agents/skills/              # Codex, Cursor, Gemini CLI, OpenCode, GitHub Copilot
 ln -s ~/.agents/skills/geo-sleuth ~/.claude/skills/geo-sleuth     # Claude Code

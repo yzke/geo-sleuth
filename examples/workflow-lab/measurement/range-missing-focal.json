@@ -1,0 +1,18 @@
+{
+  "image": {
+    "width": 1600,
+    "height": 1200,
+    "crop": "unknown",
+    "source": "Synthetic unknown crop",
+    "geometry": "rectilinear_square_pixels",
+    "pixel_frame": "exif_transposed"
+  },
+  "camera": {},
+  "target": {
+    "size_m": 2.0,
+    "size_px": 120,
+    "size_source": "Synthetic known dimension",
+    "pixel_source": "Synthetic pixel measurement",
+    "geometry": "frontoparallel"
+  }
+}

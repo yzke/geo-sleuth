@@ -3,6 +3,8 @@
 Scripts: `scripts/geo.py` (`range` / `bearing` / `dest` / `fov` / `line` / `intersect` / `frame`), `scripts/pose.py` (solving the camera position from multiple points, scoring candidate camera positions), `scripts/terrain.py` (skyline rendering).
 All results are estimates. When you write a conclusion, write out the assumptions you used (lens zoom, object size) with it.
 
+For an executable known-size or shadow workflow, read [measurement-workflow.md](measurement-workflow.md). `measure.py range` checks image geometry, focal provenance, crop and size intervals before calling the existing range calculation; `measure.py shadow` uses camera rays and a horizontal ground plane. Keep `pose.py` for solving the camera from multiple known landmarks.
+
 ## 1. Determine the field of view first
 
 The main camera (35mm-equivalent about 24–26mm) is the most common phone lens, but **without EXIF, never lock the focal to it**. Distant mountains, compressed layers and a far object filling the frame are often shot at 2–3x or more. Any search that solves for focal must cover ultra-wide to telephoto (`terrain.py fit` does 13–135mm by default when the focal is assumed); a main-camera-only search simply cannot reach a 52mm photo, and its best fit lands somewhere wrong.
@@ -47,6 +49,8 @@ When the phone is held level, the horizon is at the vertical middle of the frame
 ## 3. Estimate distance from a known size
 
 `distance ≈ real size × f / size in pixels`
+
+This is optical-axis depth for a frontoparallel span, not automatically slant distance or horizontal ground distance. Size, focal length and pixel uncertainty must travel with the result; nominal object dimensions alone do not justify a precise distance.
 
 Common reference sizes:
 

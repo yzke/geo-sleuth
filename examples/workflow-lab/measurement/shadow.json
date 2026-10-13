@@ -1,0 +1,47 @@
+{
+  "image": {
+    "width": 1600,
+    "height": 1200,
+    "crop": "none",
+    "source": "Synthetic source",
+    "geometry": "rectilinear_square_pixels",
+    "pixel_frame": "exif_transposed"
+  },
+  "camera": {
+    "focal_px": 1200,
+    "focal_source": "Synthetic calibration",
+    "calibration_frame": "current_image",
+    "principal_point_px": [
+      800,
+      600
+    ],
+    "principal_point_source": "Synthetic calibration",
+    "height_m": 1.6,
+    "height_source": "Synthetic tripod position",
+    "pitch_deg": -8.0,
+    "pitch_source": "Synthetic camera pose",
+    "roll_deg": 12.0,
+    "roll_source": "Synthetic camera pose"
+  },
+  "ground": "horizontal",
+  "object": {
+    "height_m": 2.0,
+    "height_source": "Synthetic object",
+    "geometry": "vertical"
+  },
+  "points": {
+    "source": "Independent synthetic scene projection",
+    "foot": [
+      960.8834428627382,
+      492.3569207572446
+    ],
+    "head": [
+      938.1311567940699,
+      373.1312623775842
+    ],
+    "shadow_tip": [
+      1139.7179513421854,
+      441.5602684290623
+    ]
+  }
+}

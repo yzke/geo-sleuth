@@ -36,10 +36,14 @@
 
 ---
 
+## Additions in this fork
+
+This fork of [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth) adds [known-size ranging and calibrated shadow reconstruction](skills/geo-sleuth/references/measurement-workflow.md), plus [street-image acquisition, validation and ranking handoff](skills/geo-sleuth/references/street-workflow.md). Both workflows return structured results with explicit assumptions and failure states. See the [validation report](docs/workflow-lab-report.md) and optional [isolated DSH lab](lab/README.md). Real-photo accuracy and full visual matching remain separate validation steps.
+
 ## Quick start
 
 ```bash
-npx skills add Oldcircle/geo-sleuth
+npx skills add yzke/geo-sleuth
 ```
 
 Pick your agents when prompted. Then hand your agent a photo and say:
@@ -173,13 +177,13 @@ geo-sleuth is a standard [Agent Skill](https://agentskills.io): one folder holdi
 **All six agents, user-wide, one command:**
 
 ```bash
-npx skills add Oldcircle/geo-sleuth -g -a claude-code -a codex -a cursor -a gemini-cli -a opencode -a github-copilot -y
+npx skills add yzke/geo-sleuth -g -a claude-code -a codex -a cursor -a gemini-cli -a opencode -a github-copilot -y
 ```
 
 **By hand:**
 
 ```bash
-git clone https://github.com/Oldcircle/geo-sleuth
+git clone https://github.com/yzke/geo-sleuth
 mkdir -p ~/.agents/skills ~/.claude/skills
 cp -r geo-sleuth/skills/geo-sleuth ~/.agents/skills/              # Codex, Cursor, Gemini CLI, OpenCode, GitHub Copilot
 ln -s ~/.agents/skills/geo-sleuth ~/.claude/skills/geo-sleuth     # Claude Code

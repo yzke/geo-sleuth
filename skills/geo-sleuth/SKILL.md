@@ -1,6 +1,6 @@
 ---
 name: geo-sleuth
-description: Geolocate or chronolocate a photo with tool-verified reasoning (where was this taken / when was it taken / photo geolocation / geo-guessing). Given one or more photos, intake.py does metadata, OCR and reverse image search (Baidu/Yandex) in one command; clues and candidates go on a candidate board (board.py) that ranks them and gives the next step; clues.py looks up calling codes, driving side, plates and area codes from region packs; for satellite and street view the machine ranks first and you look only at the top few (CLIP in sat_scan.py, DINOv2+SIFT in match.py); plus sun and shadow math, OSM Overpass and DEM skylines. Every conclusion is checked against real data; output is coordinates + error radius, evidence images and tiered confidence. Use when the user shares a photo and asks where was this taken / geolocate this / when was this taken / 这是哪 / 在哪拍的 / 帮我定位这张照片 / 网络迷踪 / 图寻 / 几点拍的.
+description: Geolocate or chronolocate photos with tool-verified evidence. Use for "where was this taken", "when was this taken", photo geolocation, 这是哪, 在哪拍的, 网络迷踪, 图寻, or 几点拍的. Combines metadata, OCR, reverse image search, candidate ranking, satellite and street-view comparison, camera geometry, shadow reconstruction, sun calculations, infrastructure and terrain. Also use to estimate conditional distance or sun-elevation ranges from image measurements, or fetch and validate street images for candidate comparison. Produces evidence artifacts, stated assumptions, location ranges and missing-input explanations.
 ---
 
 # geo-sleuth (v2)
@@ -32,6 +32,21 @@ The method comes from breaking down 14 photo-geolocation (网络迷踪) creator 
 8. ★ **If you can't pin a point, give a range + what information is missing**; when the candidates are a few discrete ones, don't take the midpoint: the main answer of `board.py report` is always the top-ranked candidate; the rest go into alternatives with discriminating tests.
 9. ★ **Exclusion and confirmation use the same standard**: `board.py exclude` only accepts read/computed clues + a computed file (output of `geo.py frame`, `terrain.py`, etc.); observed and inferred clues can only down-weight via `evidence --against`, with the likelihood ratio clamped to 1/3–3 (inferred) or 1/5–5 (observed). Generating candidates from "there's an X nearby" is also filtering, and X must be something confirmed in the image. Fine-level candidates such as campuses, residential compounds and street segments must go on the board too: add a batch at once with `board.py add --from <poi.py --out / osm.py geom output> --level area/road`, don't hand-pick; when you drop one, write `evidence --against` with a comparison image, and `check` lists candidates without a single piece of evidence (meaning nobody looked at them); a finer candidate goes under the one that contains it (a point under its street segment: `--parent`, or `board.py move`), so its support counts in that level's ranking, and `check` fails when it skips a level; labels from third-party data (tree species in a municipal inventory, an exact school-name match) can only down-weight, never justify exclusion (in two cases the ground truth was skipped by hand exactly this way). **The excluded extent must be ≤ the evidence extent**: for candidates with extent, such as districts, areas and roads, `exclude` needs `--covers lat,lon[:lat,lon]` stating which stretch the evidence covers; the script rejects coverage below half (excluding a whole road after looking at one point on it failed in two cases).
 10. ★ **Population and fame are not evidence**; scan order follows "share ÷ pages" (`board.py next`): finish the small districts first, put large districts last with a page cap.
+11. **A calculation does not verify its inputs.** Keep measured pixels, sourced dimensions and assumed camera parameters separate. Multiple results derived from the same measurement are one evidence chain. `measure.py` and `street.py` produce artifacts for review, not automatic likelihood ratios or exclusions. A failed street-image request, unusable image or low similarity score is not evidence that a location is wrong.
+
+## Measurement and street-image workflow contract
+
+Use the branch references below only when needed. Prepare the documented JSON input, run the script, then inspect its JSON output and artifacts before updating the board. Both workflows return `schema_version`, `workflow`, `status`, `result`, `assumptions`, `warnings` and `evidence`:
+
+| Status | Agent action |
+|---|---|
+| `ok` | Inspect the result, assumptions and evidence files; record only the supported constraint. |
+| `partial` | Inspect what succeeded and what is missing. Use only the usable subset; retain the stated limitations. |
+| `needs_input` | State the specific missing measurement or calibration. Continue independent clues; do not silently invent the input. |
+| `invalid` | Correct the input schema, units or inconsistent measurements, then rerun. |
+| `unavailable` | Record the source failure and try a documented alternative. Do not turn missing coverage into an exclusion. |
+
+Exit codes are 0 for `ok`/`partial`, 2 for `needs_input`/`invalid`, and 3 for `unavailable`. Read JSON even after a nonzero exit. Preserve each request, result and referenced image together. Conditional measurement ranges are not calibrated confidence intervals. Street-image validity checks establish usable image data, not a scene match; inspect the top ranked images for invariant features before confirmation.
 
 ## Flow
 
@@ -75,6 +90,7 @@ The coarse environmental-location rules still apply: terrain before river width 
 | What you have | Approach | Read |
 |---|---|---|
 | A unique anchor (building, statue, tower, scenic-area building) | Anchor geometry: sight-line intersection, alignment lines, tangent lines, filtering buildings by camera height | `geometry.md` |
+| Known object size + pixel span, or a vertical object and its shadow with camera calibration | `measure.py range / shadow`: check focal/crop provenance, reconstruct geometry, return conditional intervals and explicit missing inputs | `measurement-workflow.md` |
 | Distant mountains, skyline | Render candidate camera positions with `terrain.py view` and compare; this fixes only one sight line, then find a second constraint. No EXIF: don't assume the main camera (distant mountains are often zoomed); a best focal on the edge of the searched range means widen and rerun. Near range in front of a far one: score both layers | `geometry.md` |
 | Clear shadows, lit faces, the sun in the frame | `sun.py locate / when / facing / compass`: latitude band, time, heading, true bearing of objects in the image | `sky.md` |
 | Route numbers, railway or power-line specs, a large river | Linear corridor + line-to-point: `osm.py route / crossings / along` | `corridors.md` |
@@ -103,6 +119,8 @@ uv run ${CLAUDE_SKILL_DIR}/scripts/sat_scan.py points --points big.json --preset
 - Nothing in the top 30 matches: first go back to the "candidates down-weighted by inference" listed by `board.py check` and to the falsification conditions, then switch preset or go to z18, and only then widen the area.
 
 ### Step 5: confirmation — street view is ranked first too
+
+For bounded candidate coordinates, use the acquisition and validation workflow in `references/street-workflow.md`: `street.py fetch` tries the requested providers per candidate, rejects corrupt/blank/tiny images and writes a manifest with source coordinates, direction, projection and capture-date metadata when available. `street.py validate` checks an existing image set. Only hand the current run's accepted perspective images to `match.py rank --images`; use the manifest's command and inspect the resulting comparison sheet. Keep service failures, coverage gaps and rejected images separate from comparison results.
 
 ```bash
 uv run ${CLAUDE_SKILL_DIR}/scripts/baidu_pano.py scan <lat,lon> --radius 300 --out panos.json                     # the street-view script the region card names (CN: baidu_pano.py); otherwise gsv.py
