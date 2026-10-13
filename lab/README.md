@@ -41,6 +41,8 @@ Repeat the offline checks from the repository root:
 python3 -m pytest skills/geo-sleuth/tests/test_workflow.py skills/geo-sleuth/tests/test_measure.py skills/geo-sleuth/tests/test_street.py -q
 uv run skills/geo-sleuth/tests/test_runtime.py
 uv run skills/geo-sleuth/tests/test_board.py
+uv run skills/geo-sleuth/tests/test_infra_board.py
+uv run skills/geo-sleuth/tests/test_osm_intersections.py
 uv run skills/geo-sleuth/tests/test_regions.py
 ```
 

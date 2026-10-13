@@ -285,16 +285,78 @@ def cmd_route(args) -> dict:
     return {f"R{i}": p for i, p in enumerate(pts)}
 
 
+def _segment_cells(p0, p1, *, pad=False) -> set[tuple[int, int]]:
+    """Linear-size broad phase, including long segment interiors.
+
+    Samples are at most half a 500 m cell apart on either axis. At a real
+    crossing, each segment has a sample within 125 m per axis; padding A by
+    one cell therefore guarantees a shared cell with B. Exact intersection
+    testing below rejects the extra broad-phase pairs. No bounding-box fill.
+    """
+    cell_m = 500
+    steps = max(1, math.ceil(max(abs(p1[0] - p0[0]), abs(p1[1] - p0[1])) / (cell_m / 2)))
+    if steps > 10000:
+        sys.exit("Intersection geometry has a segment longer than 2500 km; split the geometry or narrow the query")
+    cells = set()
+    offsets = (-1, 0, 1) if pad else (0,)
+    for i in range(steps + 1):
+        t = i / steps
+        cx = math.floor((p0[0] + t * (p1[0] - p0[0])) / cell_m)
+        cy = math.floor((p0[1] + t * (p1[1] - p0[1])) / cell_m)
+        cells.update((cx + dx, cy + dy) for dx in offsets for dy in offsets)
+    return cells
+
+
 def cmd_intersect(args) -> dict:
     """Crossing points of two kinds of linear features (railway × power line, river × road ...), optionally requiring B to bend beyond the crossing (angle tower, river bend)."""
+    _validate_intersect_filter(args.a)
+    _validate_intersect_filter(args.b)
+    report_path = getattr(args, "report", None)
+    if report_path and args.out and report_path.resolve() == args.out.resolve():
+        sys.exit("--report and --out must use different files")
     pre, sc = _scope(args)
     ql = (f"[out:json][timeout:280];{pre}way{args.a}{sc}->.a;way{args.b}(around.a:30){sc}->.b;"
           f".a out geom tags;.b out geom tags;")
     data = run(ql, args.proxy, args.cache, timeout=280)
-    A = [e for e in data.get("elements", []) if e.get("geometry") and _match(e, args.a)]
-    B = [e for e in data.get("elements", []) if e.get("geometry") and e not in A]
+    # Overpass can emit the same way in both output sets. Preserve each way
+    # once before indexing, so duplicate outputs cannot add apparent evidence.
+    elements = list({(e.get("type"), e.get("id")): e for e in data.get("elements", [])
+                     if e.get("geometry")}.values())
+    A = [e for e in elements if _match(e, args.a)]
+    a_ids = {(e.get("type"), e.get("id")) for e in A}
+    B = [e for e in elements if (e.get("type"), e.get("id")) not in a_ids]
+    crossings, all_rows = [], []
+
+    def write_report():
+        path = getattr(args, "report", None)
+        if not path:
+            return
+        report = {
+            "schema_version": 1, "kind": "line_intersections", "coordinate_system": "WGS84",
+            "representative_role": "search_cluster_center_not_camera",
+            "geometry_method": "local_equirectangular_segment_intersection",
+            "query": {"a": args.a, "b": args.b, "area": args.area, "bbox": args.bbox,
+                      "cluster_m": args.cluster, "ring": args.ring, "bend_min_deg": args.bend_min,
+                      "bend_within_m": args.bend_within, "bend_filter": args.bend_filter,
+                      "overpass_ql": ql},
+            "crossings": crossings,
+            "clusters": [{"id": r["cluster_id"], "name": r.get("output_name"),
+                          "representative_ll": r["ll"], "crossing_ids": r["crossing_ids"],
+                          "included": "filtered_by" not in r, "filtered_by": r.get("filtered_by"),
+                          "bend": {"distance_m": r["bend"][0], "turn_deg": r["bend"][1]} if r["bend"] else None}
+                         for r in all_rows],
+            "notes": ["Crossings are map-line intersections, not verified physical connections or camera positions.",
+                      "Cluster centers are search representatives and need not lie on an actual crossing.",
+                      "Local planar geometry is for regional candidate searches, not global or survey-precision measurements.",
+                      "Missing voltage/wires tags remain unknown; absence in OSM cannot exclude a location.",
+                      "Bearings follow each way segment's node order; crossing angles are undirected (0–90 degrees)."],
+        }
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"report -> {path}")
+
     if not A or not B:
         print(f"A {len(A)} lines, B {len(B)} lines: no crossing points possible (change the area or tags)")
+        write_report()
         return {}
     lat0 = A[0]["geometry"][0]["lat"]
     kx, ky = 111320 * math.cos(math.radians(lat0)), 110540
@@ -303,11 +365,16 @@ def cmd_intersect(args) -> dict:
         return (g["lon"] * kx, g["lat"] * ky)
 
     cells: dict[tuple[int, int], list] = {}
+    index_entries = 0
     for el in A:
         pts = [pr(g) for g in el["geometry"]]
-        for s0, s1 in zip(pts, pts[1:]):
-            for c in {(int(s0[0] // 500), int(s0[1] // 500)), (int(s1[0] // 500), int(s1[1] // 500))}:
-                cells.setdefault(c, []).append((s0, s1, el))
+        for segment_i, (s0, s1) in enumerate(zip(pts, pts[1:])):
+            cover = _segment_cells(s0, s1, pad=True)
+            index_entries += len(cover)
+            if index_entries > 2000000:
+                sys.exit("Intersection index exceeds 2 million cell entries; use a smaller --bbox/--area")
+            for c in cover:
+                cells.setdefault(c, []).append((s0, s1, el, segment_i))
 
     def cross(p1, p2, p3, p4):
         d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0])
@@ -319,56 +386,90 @@ def cmd_intersect(args) -> dict:
             return (p1[0] + t * (p2[0] - p1[0]), p1[1] + t * (p2[1] - p1[1]))
         return None
 
-    def find_bend(el, hit):
-        """First bend ≥bend_min in B within bend_within beyond the crossing: returns (distance m, turn angle °) or None."""
+    def find_bend(el, hit, segment_i):
+        """Nearest qualifying B bend, measured along the way from the actual crossing."""
         if args.bend_min <= 0:
             return None
         lo, hi = _band(args.bend_within)
         pts = [pr(g) for g in el["geometry"]]
-        k = min(range(len(pts)), key=lambda i: math.dist(pts[i], hit))
-        for direction in (1, -1):
-            d = 0.0
-            i = k
-            while 0 < i + direction < len(pts) - 1:
+        found = []
+        for direction, i in ((1, segment_i + 1), (-1, segment_i)):
+            d = math.dist(hit, pts[i])
+            while 0 < i < len(pts) - 1:
+                if d > hi:
+                    break
+                if d >= lo:
+                    a1 = math.atan2(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+                    a2 = math.atan2(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
+                    turn = abs(math.degrees(a2 - a1))
+                    turn = min(turn % 360, 360 - turn % 360)
+                    if turn >= args.bend_min:
+                        found.append((round(d), round(turn)))
+                        break
                 nxt = i + direction
                 d += math.dist(pts[i], pts[nxt])
                 i = nxt
-                if d > hi:
-                    break
-                if d < lo:
-                    continue
-                a1 = math.atan2(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
-                a2 = math.atan2(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
-                turn = abs(math.degrees(a2 - a1))
-                turn = min(turn % 360, 360 - turn % 360)
-                if turn >= args.bend_min:
-                    return round(d), round(turn)
-        return None
+        return min(found) if found else None
 
-    hits = []
+    hits, by_crossing = [], {}
     for el in B:
         pts = [pr(g) for g in el["geometry"]]
-        for s0, s1 in zip(pts, pts[1:]):
-            for c in {(int(s0[0] // 500), int(s0[1] // 500)), (int(s1[0] // 500), int(s1[1] // 500))}:
-                for a0, a1, ael in cells.get(c, []):
+        for b_segment_i, (s0, s1) in enumerate(zip(pts, pts[1:])):
+            tested = set()
+            for c in sorted(_segment_cells(s0, s1)):
+                for a0, a1, ael, a_segment_i in cells.get(c, []):
+                    pair = (ael["id"], a_segment_i)
+                    if pair in tested:
+                        continue
+                    tested.add(pair)
                     x = cross(a0, a1, s0, s1)
                     if not x:
                         continue
                     ta, tb = ael.get("tags") or {}, el.get("tags") or {}
+                    ll = [x[1] / ky, x[0] / kx]
+                    bearing_a = math.degrees(math.atan2(a1[0] - a0[0], a1[1] - a0[1])) % 360
+                    bearing_b = math.degrees(math.atan2(s1[0] - s0[0], s1[1] - s0[1])) % 360
+                    angle = abs((bearing_a - bearing_b) % 180)
+                    angle = min(angle, 180 - angle)
+                    segment_pair = {"a_segment_index": a_segment_i, "b_segment_index": b_segment_i,
+                                    "a_bearing_deg": round(bearing_a, 6), "b_bearing_deg": round(bearing_b, 6),
+                                    "angle_deg": round(angle, 6)}
+                    # Shared vertices may be intersected by adjacent segments.
+                    # Collapse only the same way pair at the same location;
+                    # nearby distinct ways and all local tangents remain visible.
+                    key = (ael["id"], el["id"], round(ll[0], 8), round(ll[1], 8))
+                    if key in by_crossing:
+                        by_crossing[key]["segment_pairs"].append(segment_pair)
+                        continue
+                    bend = find_bend(el, x, b_segment_i)
+                    member = {"id": f"X{len(crossings) + 1:05d}", "ll": [round(v, 9) for v in ll],
+                              "a": {"type": ael["type"], "id": ael["id"], "tags": dict(ta),
+                                    "bearing_deg": round(bearing_a, 6)},
+                              "b": {"type": el["type"], "id": el["id"], "tags": dict(tb),
+                                    "bearing_deg": round(bearing_b, 6)},
+                              "angle_deg": round(angle, 6), "segment_pairs": [segment_pair],
+                              "bend": {"distance_m": bend[0], "turn_deg": bend[1]} if bend else None}
+                    crossings.append(member)
+                    by_crossing[key] = member
                     lbl = " ".join(filter(None, [ta.get("name", ""), tb.get("name", ""), tb.get("voltage", ""),
                                                  ta.get("electrified", "")]))
-                    hits.append((lbl[:40], [x[1] / ky, x[0] / kx], {"bend": find_bend(el, x)}))
+                    hits.append((lbl[:40], ll, {"bend": bend, "crossing_id": member["id"]}))
     groups = _cluster(hits, args.cluster)
     rows = []
-    for g in groups:
+    for i, g in enumerate(groups, 1):
         bends = [m[2]["bend"] for m in g["members"] if m[2]["bend"]]
         rows.append({"label": g["members"][0][0], "ll": [round(g["center"][0], 6), round(g["center"][1], 6)],
-                     "bend": min(bends) if bends else None})
+                     "bend": min(bends) if bends else None, "cluster_id": f"C{i:05d}",
+                     "crossing_ids": [m[2]["crossing_id"] for m in g["members"]]})
+    all_rows = list(rows)
     if args.ring:
         c_ll, rmin, rmax = args.ring.split(":")
         c = tuple(map(float, c_ll.split(",")))
         before = len(rows)
-        rows = [r for r in rows if float(rmin) <= _dist(c, r["ll"]) <= float(rmax)]
+        for r in rows:
+            if not float(rmin) <= _dist(c, r["ll"]) <= float(rmax):
+                r["filtered_by"] = "ring"
+        rows = [r for r in rows if "filtered_by" not in r]
         print(f"--ring: {len(rows)}/{before} places kept in the ring {rmin}–{rmax} m from {c_ll}")
     print(f"A {len(A)} lines × B {len(B)} lines → {len(hits)} crossing points, merged into {len(groups)} clusters")
     if args.bend_min > 0:
@@ -377,6 +478,8 @@ def cmd_intersect(args) -> dict:
               f" (labeled \"bend\"; used only for ranking, see --bend-filter)")
         if args.bend_filter:
             dropped = [r for r in rows if not r["bend"]]
+            for r in dropped:
+                r["filtered_by"] = "bend"
             rows = with_bend
             print(f"  --bend-filter: dropped {len(dropped)} crossing points without a bend. The bend comes from interpreting the photo; "
                   f"if none of the candidates match, look back at this dropped batch first")
@@ -396,7 +499,9 @@ def cmd_intersect(args) -> dict:
             extra.append(f"bend {r['bend'][0]}m/{r['bend'][1]}°")
         if r.get("near_m") is not None:
             extra.append(f"{r['near_m'] / 1000:.1f}km from {r['near_name'][:6]}")
-        out[f"{i:03d} {r['label']} {' '.join(extra)}".strip()] = r["ll"]
+        r["output_name"] = f"{i:03d} {r['label']} {' '.join(extra)}".strip()
+        out[r["output_name"]] = r["ll"]
+    write_report()
     return out
 
 
@@ -541,15 +646,40 @@ def _rank_rows(rows: list[dict], flt: str, args) -> list[dict]:
     return rows
 
 
+_TAG_CONDITION = re.compile(r'\["([^"\\]+)"(?:(=|~)"((?:\\.|[^"\\])*)"(?:\s*,\s*([iI]))?)?\]')
+
+
+def _validate_intersect_filter(flt: str) -> None:
+    """The A/B partition must not silently accept operators _match cannot read."""
+    parts = list(_TAG_CONDITION.finditer(flt.strip()))
+    if not parts or "".join(m.group(0) for m in parts) != flt.strip():
+        sys.exit('Unsupported intersect filter: use ["key"], ["key"="value"] or ["key"~"regex"[,i]]')
+    for match in parts:
+        _, op, value, ignore_case = match.groups()
+        if op == "=" and ignore_case:
+            sys.exit("Unsupported intersect filter: the i flag applies only to value regexes")
+        if op:
+            try:
+                value = json.loads('"' + value + '"')
+                if op == "~":
+                    re.compile(value, re.I if ignore_case else 0)
+            except (ValueError, re.error):
+                sys.exit("Invalid intersect filter value or regex")
+
+
 def _match(el: dict, flt: str) -> bool:
-    """Roughly check whether a feature matches A's tag filter (looks only at key=value conditions)."""
+    """Check the common existence, equality and value-regex tag conditions."""
     tags = el.get("tags") or {}
-    for k, v in re.findall(r'\["([^"]+)"="([^"]+)"\]', flt):
-        if tags.get(k) != v:
+    for match in _TAG_CONDITION.finditer(flt):
+        key, op, value, ignore_case = match.groups()
+        if key not in tags:
             return False
-    for k in re.findall(r'\["([^"=\]]+)"\]', flt):
-        if k not in tags:
-            return False
+        if op:
+            value = json.loads('"' + value + '"')
+            if op == "=" and tags[key] != value:
+                return False
+            if op == "~" and not re.search(value, tags[key], re.I if ignore_case else 0):
+                return False
     return True
 
 
@@ -761,6 +891,7 @@ def main() -> None:
     it.add_argument("--rank-near", help='rank by distance to the nearest feature of a kind, e.g. \'["place"~"^(city|town)$"]\', \'["highway"="services"]\'')
     it.add_argument("--ring", help="lat,lon:min_m:max_m — keep only crossing points in this distance ring around a point (e.g. a distance range computed from a landmark's pixel size)")
     it.add_argument("--cluster", type=float, default=100, help="crossing points within this many meters merge into one place")
+    it.add_argument("--report", type=Path, help="write actual crossing members, way IDs/tags, local bearings and cluster provenance; centers are search representatives, not camera positions")
     scope(it)
 
     cv = sub.add_parser("coverage", help="how many features of a kind each candidate admin area has: check OSM coverage before enumerating; blank areas can't be grounds for exclusion")

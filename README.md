@@ -40,6 +40,8 @@
 
 This fork of [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth) adds [known-size ranging and calibrated shadow reconstruction](skills/geo-sleuth/references/measurement-workflow.md), plus [street-image acquisition, validation and ranking handoff](skills/geo-sleuth/references/street-workflow.md). Both workflows return structured results with explicit assumptions and failure states. See the [validation report](docs/workflow-lab-report.md) and optional [isolated DSH lab](lab/README.md). Real-photo accuracy and full visual matching remain separate validation steps.
 
+[Infrastructure cross-validation](skills/geo-sleuth/references/power-infrastructure.md) records visible towers and lines, keeps conductor-count observations separate from voltage hypotheses, preserves crossing members and source tags, and checks each final candidate before a precise conclusion. The board audits missing or stale comparisons; it does not perform automatic tower recognition or certify positional accuracy.
+
 ## Quick start
 
 ```bash

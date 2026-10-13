@@ -47,13 +47,12 @@ The web version of OpenRailwayMap (openrailwaymap.org) shows line class and sing
 
 ## 3. Power lines
 
-- Tower type only separates "transmission / distribution": tall steel-tube monopoles or angle-steel lattice towers with long insulator strings = transmission; short concrete poles or wooden poles = distribution.
-- Read the voltage from bundled conductors (common in China): single conductor ≈ below 220 kV, bundles of 2 = 220–330 kV, **bundles of 4 = 500 kV**, bundles of 6 = 750 kV or ±800 kV DC, bundles of 8 = 1000 kV.
-- When you can't count the conductors at a distance, look for small dark dots at intervals along the line (spacers): present → bundled conductors, treat as ≥220 kV; if you can't narrow it further, don't commit to a single voltage.
-- The voltage can also be looked up in reverse: find the same type of tower in street view at any known location, click that line on OpenInfraMap (openinframap.org) to see its voltage, and you get "this tower type ≈ X kV" (v002).
-- **Useless alone, useful only in intersection**: only crossing or parallel relationships with railways, rivers and expressways narrow things down. The angles between several linear features (power line perpendicular to the railway, parking spaces perpendicular to the railway) are a spatial signature visible at a glance on satellite imagery (v011).
+- Record tower silhouette, crossarms, insulators, phase/circuit arrangement and sub-conductors **per bundle**. Keep observations separate from voltage hypotheses. Tower height or design alone does not establish a voltage class.
+- Four sub-conductors can suggest 500 kV in a mainland-China search, but documented 220 kV four-bundle and 500 kV six-bundle sections defeat a fixed lookup. Visible spacers establish possible bundling, not a minimum voltage. See [power-infrastructure.md](power-infrastructure.md) for sources and a complete workflow.
+- Preserve ambiguous counts, missing map tags and mixed-voltage lines. `wires` is bundle count; `cables` is phase/pole conductor count. A similar tower elsewhere is a comparison example, not proof of the photographed line's rating.
+- Crossing/parallel relationships, paired towers, bends and relative ordering can narrow a corridor sharply. Use these both to generate candidates and to cross-check a location found by another clue. Verify projected image relationships against candidate camera geometry; a pixel angle is not a map bearing.
 
-OSM tags: `["power"="line"]["voltage"="500000"]`, `["power"="tower"]`.
+Start with `["power"="line"]` and `["power"="tower"]`; use sourced voltage as a ranking attribute and retain unknown tags. OpenInfraMap and OSM share the same underlying map data.
 
 ## 4. Co-occurrence queries (several kinds of infrastructure in the same frame)
 
@@ -71,24 +70,25 @@ uv run scripts/osm.py near --area <full name of the province-level division> \
 - Adding `--report near.json` writes each candidate's actual distance to B and C and its key tags (voltage, electrification, line name), for ranking.
 - **Rank, then look**: distance to towns and roads (`--rank-near`), whether the voltage class matches the image, whether the actual distance is close to the image estimate, terrain (`terrain.py elev` to see whether the railway is on a slope).
 - `--rank-near` is only a rough ranking: in China, OSM town nodes, hotels and residential land-use tagging are all uneven (residential land use even includes villages, so ranking by it is almost useless). Town nodes `'["place"~"^(city|town)$"]'` are relatively the most stable; for service areas use `'["highway"="services"]'`.
-- **What actually narrows candidates is attributes you can verify in the image**: countable bundled conductors → voltage, visible catenary → electrification, the track count at a level crossing. One verified attribute often cuts 80% of candidates, more effective than any distance ranking; if you can't verify it, widen it to a range (e.g. 220–500 kV); don't guess a single value.
+- **Use verified attributes and spatial relationships to rank candidates**: readable bundle count, visible catenary, track count, tower pairing and crossing order. Bundle count is an observation; voltage remains a separate hypothesis. Incomplete tags and uncertain interpretations cannot justify removing the unknown group.
 - **Stopping rule**: view thumbnails in rank order with `tiles.py sheet`; if there's still no match after 100, stop and report "province/city level + candidate areas + why they didn't match"; don't keep scanning by eye.
 
 ## 4.1 Crossings of two kinds of lines (railway × power line, river × road)
 
 ```bash
 uv run scripts/osm.py intersect --area <full name of the province-level division> \
-  --a '["railway"="rail"]["electrified"="contact_line"]' --b '["power"="line"]["voltage"~"^(220000|500000)$"]' \
+  --a '["railway"="rail"]' --b '["power"="line"]' \
   --bend-min 25 --bend-within 100:900 --rank-near '["place"~"^(city|town)$"]' \
-  --cluster 600 --out crossings.json      # for voltage, write only the range you can verify in the image
+  --cluster 600 --out crossings.json --report crossings-report.json
 uv run scripts/tiles.py sheet --points crossings.json --zoom 18 --out crossings_sheet.jpg
 ```
 
 - `--bend-min`: marks crossings where B has a bend away from the crossing point (angle tower, river bend); by default it **only labels them and ranks them first; it doesn't delete**.
 - Only `--bend-filter` actually deletes; deleted ones are written to `<out>_dropped.json`. Use it only when "the line turns at this tower, and which side of the crossing the tower is on" is a fact you confirmed with your own eyes in the image; a bend position inferred from a distant view doesn't count.
 - `--ring lat,lon:min_m:max_m`: keep only crossings within this distance ring around a point (e.g. a distance computed from the landmark's pixel size and the field-of-view range).
-- Put voltage and electrification into the filter only when you can count the bundled conductors or see the catenary in the image; otherwise loosen them into ranking.
+- Prefer broad queries and rank voltage/electrification afterward, retaining missing tags. Counting sub-conductors alone does not establish voltage. A confirmed property in the photo does not establish completeness of that OSM field.
 - Labels carry the line name, voltage, electrification, bend, and distance to the reference feature; look first at the ones that match the image.
+- `--report` preserves actual intersection members, way IDs, full tags and local bearings. The old `--out` mapping contains cluster search centers, which are neither exact crossing points nor camera positions. Use the member coordinates for subsequent camera hypotheses and [candidate-specific verification](power-infrastructure.md#4-check-the-proposed-camera-position-including-contrary-evidence).
 
 ## 4.2 Street-view geometry template (no anchor, but a clear street layout)
 

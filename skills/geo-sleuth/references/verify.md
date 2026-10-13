@@ -30,6 +30,14 @@ If it appears, give up; don't look for reasons to explain it away. Confirmation 
 - To road level: ≥2 unique features; to building level: ≥3, plus two independent camera-position constraints.
 - Common features like "factory buildings all faced with yellow tiles" don't count as unique features.
 
+### Visible infrastructure must be accounted for
+
+For each final candidate, compare the observed towers/lines with its road-crossing geometry, tower arrangement, left/right order and terrain or ground imagery. Record `board.py verify --candidate <name> --clue <observed infra ID> --outcome matched|contradicted|inconclusive|not-applicable --file <comparison artifact> --why "…"`. The artifact should show the specific relationship tested, not merely a downloaded map. See [power-infrastructure.md](power-infrastructure.md).
+
+Run `board.py check --require-verified` and `board.py report --require-verified --merge result.json` before claiming a precise point; select that point explicitly with `--candidate` when needed. Missing inspection, unchecked infrastructure, ambiguous results, contradictions or changed artifacts leave a blocker. Merely using a clue in scoring or `--resolves` does not verify the candidate. A broad result remains reportable without the strict flag.
+
+`infrastructure_ready` is limited to this audit, not a guarantee of positional accuracy. Still require independent constraints/unique ground features. If the line crossing found the place, reserve terrain, building or other geometric evidence for confirmation. OpenInfraMap and OSM are one underlying map source; a voltage inferred from the same bundle crop is one evidence chain with that observation.
+
 ## 3. Bearing self-check (required before output)
 
 Draw a top-down sketch on satellite imagery: camera position → foreground object → midground object → distant landmark, plus the direction of the sun or shadows. Check each item:

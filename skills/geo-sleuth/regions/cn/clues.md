@@ -76,10 +76,11 @@ Entries use the shared format (`references/clues/README.md`); lookups: `clues.py
 
 ### Number of bundled conductors on transmission lines
 - Look for: how many conductors form one bundle per phase under the tower crossarm (with spacers between them)
-- Points to: voltage level. Common: single conductor ≈ below 220 kV, 2 → 220–330 kV, 4 → 500 kV, 6 → 750 kV or ±800 kV DC, 8 → 1000 kV
+- Points to: voltage hypotheses to investigate, together with AC/DC arrangement, circuit layout, insulators and local engineering sources. Four sub-conductors can suggest 500 kV, but 220 kV four-bundle and 500 kV six-bundle sections are documented; never use a one-to-one voltage classifier
 - Strength: weak (alone it only tells the grid level); medium after intersecting with railways, rivers, expressways
-- Counterexamples: special designs; the count is easy to get wrong at a distance; several circuits in one corridor overlap
-- Sources: v011 v010-3
+- Counterexamples: special designs and line upgrades; ambiguous four/six counts; phase/circuit/earth-wire counts mistaken for bundle count; several lines overlapping in perspective; missing or stale OSM tags
+- Workflow and sourced exceptions: [power infrastructure](../../references/power-infrastructure.md). Preserve unknown-voltage candidates and cross-check crossing geometry, tower pairing and terrain before a precise conclusion
+- Sources: v011 v010-3; linked engineering notices in the workflow
 
 ### Combinations of special urban transport facilities
 - Look for: cross-river passenger cableways (two or three closely parallel track ropes + a haul rope, slanting from a riverside station to the opposite bank), road/rail-transit bridges (double-deck truss, rail transit on the lower deck), light rail running through a building, long urban escalators, high-speed rail viaducts

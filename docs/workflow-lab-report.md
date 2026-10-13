@@ -1,6 +1,6 @@
-# Measurement and street-image workflow lab
+# Geolocation workflow lab
 
-This fork extends [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth) from development base `b5419379c1936d6ee07283950fa3ac1fb81563e8`, integrated with upstream `418aea2` before publication. It adds two bounded workflows to the existing Agent Skill. The implementation is maintained in [yzke/geo-sleuth](https://github.com/yzke/geo-sleuth) for further testing before an upstream contribution.
+This fork extends [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth) from development base `b5419379c1936d6ee07283950fa3ac1fb81563e8`, integrated with upstream `418aea2` before publication. It adds measurement, street-image and infrastructure-verification workflows to the existing Agent Skill. The implementation is maintained in [yzke/geo-sleuth](https://github.com/yzke/geo-sleuth) for further testing before an upstream contribution.
 
 ## Design and scope
 
@@ -50,6 +50,24 @@ An independent check verified the distance interval arithmetic, missing-input be
 ## Running the lab
 
 See [lab/README.md](../lab/README.md). `geo-lab-web` was verified on loopback port 3097; `open-web` opens its authenticated URL locally. `geo-lab-headless` runs one task and exits. Both use the separate lab DSH home and only the experimental skill root.
+
+## Infrastructure cross-validation update
+
+A reproduced failure motivated this update: an observed transmission tower could remain unchecked while `board.py check` passed on other evidence. Assigning a likelihood ratio also removed that tower from the unused-clue list, without any comparison to the proposed camera position.
+
+The new `inspect` command records whether infrastructure was actually reviewed in the frame. `verify` binds a comparison outcome and artifact to an observed infrastructure clue and a particular candidate. SHA-256 snapshots detect changed/deleted artifacts and changed source/candidate inputs. A score, `--resolves`, another candidate's check or a parent road's check cannot satisfy the final point's audit. Default `check` reports a failure for known visible infrastructure left unchecked; `--require-verified` returns a nonzero exit for an incomplete strict check. The reported `infrastructure_ready` concerns this audit only, not positional accuracy or independent-evidence sufficiency.
+
+`osm.py intersect --report` retains every map-intersection member, way IDs/full tags, local bearings, crossing angles and cluster membership. It preserves filtered members and reasons. Geometry fixes cover missed intersections in the middle of long segments, duplicate hits, the first bend after a crossing, and regex road filters. Cluster centers remain search representatives, not camera coordinates; calculations use a local planar approximation.
+
+The power-infrastructure reference separates bundle observations from voltage hypotheses, documents real engineering exceptions, preserves unknown map tags, and requires a second line of geographic confirmation. Case narratives supplied by the contributor informed the workflow, but contain no independently measured GPS ground truth; their private images and conversations are not included in the public fixtures.
+
+Offline validation for this update: 16 new board CLI regressions and 14 intersection geometry/provenance regressions passed, alongside the existing 113 runtime, board, region and measurement/street workflow tests: 143 tests in total. These are workflow and synthetic geometry checks, not a measured increase in real-photo geolocation success rate.
+
+Independent review found a strict-export inconsistency: a checked candidate A could be paired with candidate B's coordinates in the merged result. Strict merge now rejects that mismatch before writing, and a stated radius at most 100 m requires a point candidate with checkable geometry. A regression verifies that a blocked merge preserves the existing file. The audit's terminal output was also reduced from full repeated history to target details and bounded candidate summaries; blockers print first. The complete records remain in the board and merged JSON.
+
+An independent agent also received only the photograph embedded in a private methodology PDF, with no location, expected clue list or access to the surrounding case narrative. It inspected the scene, eight edge/corner crops and five focused crops, registered the visible lattice-like tower, and retained unknown conductor count, voltage, possible second-tower identity and solar orientation. It created a clue board, evidence sheet and follow-up verification tasks. Strict checks returned exit 2 because no geographic candidate could be verified from the permitted offline inputs. This validates one instance of clue retention and uncertainty handling, not a successful location solve or a blind accuracy benchmark.
+
+The run used existing local dependencies after the isolated environment lacked Pillow; it did not download models, upload the image or access map services. Its private artifacts remain in the lab workspace. A logging refinement followed: visibility limitations are attributes or image-quality notes, not separate positive infrastructure constraints, and a faint shape's possible tower identity remains inferred.
 
 ## Limits
 

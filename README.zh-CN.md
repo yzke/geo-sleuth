@@ -40,6 +40,8 @@
 
 本仓库 fork 自 [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth)，新增[已知尺寸测距与标定阴影反算](skills/geo-sleuth/references/measurement-workflow.md)，以及[街景获取、有效性检查与排序接入](skills/geo-sleuth/references/street-workflow.md)。两条流程均返回结构化结果、计算假设和明确的失败状态。详见[测试报告](docs/workflow-lab-report.md)与可选的[独立 DSH 实验环境](lab/README.md)。真实照片测距精度及完整视觉匹配仍需单独验证。
 
+[基础设施交叉验证](skills/geo-sleuth/references/power-infrastructure.md)补上电塔、线路和跨越关系的登记与逐候选核验：区分导线分裂数与电压假设，保留真实交叉点及完整线路标签，精确结论前检查遗漏或失效的比对记录。脚本负责流程审计，不代替模型看图，也不自动保证定位精度。
+
 ## 快速开始
 
 ```bash

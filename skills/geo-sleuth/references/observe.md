@@ -44,14 +44,16 @@ uv run scripts/imgprep.py zoom photo.jpg --box x0,y0,x1,y1 --scale 4 --out z1.pn
 ## 4. Layer 3: infrastructure specs (can be looked up in data)
 
 - **Railways**: catenary or not; masts on one side (usually single-track) or on both sides or with portal frames (double-track); how many parallel tracks at a level crossing; viaduct or embankment; railway company name on crossing signs.
-- **Power lines**: tower type (single tubular steel pole / angle-steel lattice tower); how many conductors per bundle per phase (common in China: 4 per bundle = 500 kV); angle relative to railways, rivers, roads.
+- **Power lines**: tower silhouette and crossarms; sub-conductors in each phase bundle; separate towers versus circuits on one tower; crossing/parallel relationship with roads, railways and rivers. Keep an uncertain count such as `{4,6}` or `unknown`. Four sub-conductors do not uniquely imply 500 kV. Log visible infrastructure as observed clues and follow [power-infrastructure.md](power-infrastructure.md) to test it against the candidate even when another feature led to that candidate.
 - **Special transport facilities**: cross-river cableways, road/rail-transit bridges, light rail through a building, high-speed rail bridges, long urban escalators, cable cars.
 - **Classify cables at the frame edges**: high-voltage lines (tall towers, insulators, separate phases, nearly horizontal over crossing spans) / passenger cableways (two or three closely parallel track ropes + a haul rope, steeply slanting and sagging) / cable-stayed bridge stays (fanning from the tower top) / ordinary wires (thin, messy, hung on utility poles).
 - Solar water heaters, density of AC outdoor units, security window grilles, rooftop water tanks.
 
+Record the inspection with `board.py inspect --infra present|absent|unclear --file <photo> --why "…"`. `absent` requires an actual frame review; poor visibility is `unclear`. This records the agent's perception, not an automated detection result.
+
 ## 5. Layer 4: sky
 
-- Shadows: direction (relative to the frame, relative to the road), ratio of length to object height, whether they are parallel to each other.
+- Shadows: direction relative to the frame and road, object-height/ground-shadow information, and consistency with perspective. Ground-parallel shadows can converge in the image; image non-parallelism alone is not a contradiction.
 - Satellite TV dishes: heading, size (small Hu Hu Tong dish / large dish).
 - Lit face: which face of a building is bright.
 - The sun itself, sunrise and sunset, backlit silhouettes.

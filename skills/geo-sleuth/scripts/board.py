@@ -19,6 +19,8 @@ Rules are written as code, not left to self-discipline:
   add        add candidates (country/province/city/district/area/point); --from bulk-imports output of poi.py / gazetteer.py / osm.py geom
   children   use gazetteer.py to add every subdivision of an admin area as a candidate ("list the whole category first")
   clue       record a clue: seen / text read / inferred / computed
+  inspect    record whether infrastructure is visible in the input frame
+  verify     record a candidate-specific infrastructure comparison, with file fingerprints
   evidence   a clue's likelihood ratio for some candidates (>1 supports, <1 opposes)
   exclude    exclude a candidate (needs a computed file)
   scan-bbox  set a candidate's scan extent (built-up area); pages are counted from it
@@ -62,6 +64,7 @@ from datetime import datetime
 from pathlib import Path
 
 import regions
+import _infra
 
 HERE = Path(__file__).parent
 # uv run writes its own path into the UV env var: call child scripts with it, so uv is found even when it isn't on PATH (e.g. just installed, terminal not reopened)
@@ -213,7 +216,9 @@ def _cost_of(c: dict, args) -> tuple[int | None, str]:
 def cmd_init(args, p: Path) -> None:
     if p.exists() and not args.force:
         sys.exit(f"{p} already exists (add --force to overwrite)")
-    b = {"case": args.case or Path.cwd().name, "photo": args.photo, "created": datetime.now().isoformat(timespec="seconds"),
+    b = {"case": args.case or Path.cwd().name, "photo": args.photo, "photo_path": str(Path(args.photo).resolve()),
+         "photo_path_for": args.photo,
+         "created": datetime.now().isoformat(timespec="seconds"),
          "country": _country_code(args.country) if args.country else None,
          "candidates": {}, "clues": {}, "evidence": [], "falsify": {}, "log": []}
     _save(p, b)
@@ -455,6 +460,8 @@ def cmd_clue(args, p: Path) -> None:
             sys.exit("--resolves requires --file pointing to an existing computed output file")
         output = str(Path(output).resolve())
     kind = _clue_kind(args.kind)
+    if kind == "infra" and output and Path(output).is_file():
+        output = str(Path(output).resolve())
     b["clues"][kid] = {"text": args.text, "kind": kind, "status": args.status, "file": output,
                        "source": args.source or "", "used": False}
     if resolves:
@@ -463,6 +470,35 @@ def cmd_clue(args, p: Path) -> None:
     _save(p, b)
     cap = LR_CAP[args.status]
     print(f"{kid} recorded. Status {args.status}: likelihood ratio cap {cap:g}" + (", can only rank, can't exclude" if args.status in ("inferred", "observed") else ", usable for exclude (still needs a computed file)"))
+
+
+def cmd_inspect(args, p: Path) -> None:
+    b = _load(p)
+    try:
+        record = _infra.inspection_record(b, p, args.infra, args.file, args.why)
+    except (OSError, ValueError) as error:
+        sys.exit(str(error))
+    record["created"] = datetime.now().isoformat(timespec="seconds")
+    b.setdefault("infrastructure_inspections", []).append(record)
+    _log(b, f"inspect {record['id']} infrastructure={args.infra}: {record['why']}")
+    _save(p, b)
+    print(f"{record['id']} recorded: infrastructure {args.infra}. "
+          "Observed infrastructure still needs a comparison for each proposed precise candidate.")
+
+
+def cmd_verify(args, p: Path) -> None:
+    b = _load(p)
+    name = _find(b, args.candidate)
+    try:
+        record = _infra.verification_record(b, p, name, args.clue, args.outcome, args.file, args.why)
+    except (OSError, ValueError) as error:
+        sys.exit(str(error))
+    record["created"] = datetime.now().isoformat(timespec="seconds")
+    b.setdefault("infrastructure_checks", []).append(record)
+    _log(b, f"verify {record['id']} {name}/{args.clue}={args.outcome}: {record['why']}")
+    _save(p, b)
+    print(f"{record['id']} recorded: {name}/{args.clue} {args.outcome}. "
+          "No likelihood ratio or exclusion was added; this records review, not location accuracy.")
 
 
 def _parse_lr(items: list[str] | None, default: float | None) -> list[tuple[str, float]]:
@@ -770,8 +806,95 @@ def _skip_hint(b: dict, name: str) -> str | None:
             f"its evidence never reaches the {lv} ranking: {where}")
 
 
+def _conclusion_level(b: dict, args) -> str | None:
+    requested = getattr(args, "candidate", None)
+    if not requested:
+        return _frontier(b)
+    name = _find(b, requested)
+    candidate = b["candidates"][name]
+    if candidate.get("status") == "excluded":
+        sys.exit("--candidate must be an active main candidate")
+    level = candidate["level"]
+    rows = [row for row in _scores(b, level, args.prior_by) if not row["excluded"]]
+    if rows[0]["name"] != name:
+        sys.exit(f"--candidate {name} is not first place at {level} level ({rows[0]['name']}); "
+                 "update evidence before changing the main answer")
+    return level
+
+
+def _print_infrastructure(audit: dict) -> None:
+    # Put every target blocker before detail. Full snapshots/history stay in the
+    # board and merged report; repeating them per candidate can swamp an agent.
+    for message in audit["blockers"]:
+        print(f"INFRA BLOCKER {message}")
+    target = next((row for row in audit["candidates"] if row["name"] == audit["verification_target"]), None)
+    others = [row for row in audit["candidates"] if row is not target]
+    checks = []
+    for check in target["checks"] if target else []:
+        record = check.get("record") or {}
+        why = record.get("why", "")
+        checks.append({"clue": check["clue"], "state": check["state"], "why": why[:600],
+                       "why_truncated": len(why) > 600,
+                       "artifact": (record.get("artifact") or {}).get("path"), "issues": check["issues"]})
+    inspection = audit["inspection"].get("record") or {}
+    summary = {"verification_target": audit["verification_target"],
+               "infrastructure_ready": audit["infrastructure_ready"], "scope": audit["scope"],
+               "inspection": {"id": inspection.get("id"), "infra": inspection.get("infra"),
+                              "issues": audit["inspection"]["issues"]},
+               "target_checks": checks,
+               "other_candidates": [{"name": row["name"], "infrastructure_ready": row["infrastructure_ready"],
+                                     "blocker_count": len(row["blockers"])} for row in others[:10]],
+               "other_candidates_total": len(others), "other_candidates_omitted": max(0, len(others) - 10),
+               "history": {key: len(records) for key, records in audit["history"].items()}}
+    print("Infrastructure verification summary (full audit: board.json or merged report):")
+    print(json.dumps(summary, ensure_ascii=False, indent=1))
+
+
+def _merge_coordinate_check(b: dict, rep: dict, base: dict) -> list[str]:
+    """Check that a merged coordinate claim refers to the candidate reviewed."""
+    if "lat" not in base and "lon" not in base:
+        return []
+
+    def number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    lat, lon, radius = base.get("lat"), base.get("lon"), base.get("radius_m")
+    if not number(lat) or not number(lon) or not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        return ["result.json lat/lon must be finite geographic coordinates before the merged claim can be checked"]
+    if radius is not None and (not number(radius) or radius < 0):
+        return ["result.json radius_m must be a finite nonnegative number before the merged claim can be checked"]
+    if not rep["main"]:
+        return ["result.json contains coordinates but there is no active main candidate to check"]
+    main = rep["main"]
+    candidate = b["candidates"][main["name"]]
+    precise = radius is not None and radius <= 100
+    issues = []
+    if precise and main["level"] != "point":
+        issues.append("A coordinate claim with radius_m <= 100 requires a point candidate; "
+                      "add and verify the point, then select it with --candidate (road/area verification cannot substitute)")
+    pad = radius if precise else max(30, radius or 0)
+    inside = None
+    bb, center = candidate.get("bbox"), candidate.get("center")
+    if (isinstance(bb, (list, tuple)) and len(bb) == 4 and all(number(value) for value in bb)
+            and -90 <= bb[0] <= bb[2] <= 90 and -180 <= bb[1] <= bb[3] <= 180):
+        inside = _inside(candidate, lat, lon, pad_m=pad)
+    elif (isinstance(center, (list, tuple)) and len(center) == 2 and all(number(value) for value in center)
+          and -90 <= center[0] <= 90 and -180 <= center[1] <= 180):
+        inside = _cov_span_m((lat, lon), tuple(center)) <= pad
+    rep["coordinate_check"] = {"candidate": main["name"], "status": "uncheckable" if inside is None else "consistent" if inside else "mismatch",
+                               "scope": "Candidate-coordinate consistency only; does not establish the stated accuracy."}
+    if inside is False:
+        rep["main_mismatch"] = (f"result.json lat/lon is outside the board's main answer {main['name']} ({main['level']}): "
+                                "the answer's candidate isn't on that level, or the board ranking disagrees with the conclusion")
+        issues.append(rep["main_mismatch"])
+    elif inside is None and precise:
+        issues.append(f"Precise coordinate claim is uncheckable: candidate {main['name']} needs a valid bbox or center before strict merge")
+    return issues
+
+
 def cmd_check(args, p: Path) -> None:
     b = _load(p)
+    lv = _conclusion_level(b, args)
     ok = True
     print("Pre-conclusion check:")
     for name, c in b["candidates"].items():
@@ -803,10 +926,11 @@ def cmd_check(args, p: Path) -> None:
             if hint:
                 ok = False
                 print(f"  FAIL {hint}")
-    lv = _frontier(b)
+    target = None
     if lv:
         rows = [r for r in _scores(b, lv, args.prior_by) if not r["excluded"]]
         top = rows[0]
+        target = top["name"]
         if top["n_verified"] == 0:
             ok = False
             print(f"  FAIL main answer {top['name']} has no read/computed evidence, only observations and inferences: you can't claim this level or finer")
@@ -846,12 +970,21 @@ def cmd_check(args, p: Path) -> None:
     for name in [n for n, c in b["candidates"].items() if c.get("status") != "excluded"]:
         if b["falsify"].get(name):
             print(f"  ok   {name} falsification condition: {'; '.join(b['falsify'][name])}")
+    audit = _infra.audit(b, p, target)
+    _print_infrastructure(audit)
+    visible_infra = audit["observed_clues"] or (audit["inspection"]["record"] or {}).get("infra") == "present"
+    fine_target = target and b["candidates"][target]["level"] in _infra.FINE_LEVELS
+    if not audit["infrastructure_ready"] and (getattr(args, "require_verified", False) or (fine_target and visible_infra)):
+        ok = False
+        print("  FAIL infrastructure verification of the main candidate is incomplete")
     print("Result: " + ("pass" if ok else "has FAIL, fix those first"))
+    if getattr(args, "require_verified", False) and not ok:
+        raise SystemExit(2)
 
 
 def cmd_report(args, p: Path) -> None:
     b = _load(p)
-    lv = _frontier(b)
+    lv = _conclusion_level(b, args)
     rep = {"candidate_levels": {}, "main": None, "alternatives": [], "excluded": [], "unused_clues": [],
            "downweighted_not_excluded": [], "falsify": b["falsify"]}
     for l2 in LEVELS:
@@ -882,14 +1015,16 @@ def cmd_report(args, p: Path) -> None:
     rep["downweighted_not_excluded"] = sorted({e["candidate"] for e in b["evidence"] if e["lr"] < 1
                                                and b["clues"][e["clue"]]["status"] in ("inferred", "observed")
                                                and b["candidates"][e["candidate"]].get("status") != "excluded"})
-    if args.merge:
-        mp = Path(args.merge)
-        base = json.loads(mp.read_text(encoding="utf-8")) if mp.exists() else {}
-        if rep["main"] and isinstance(base.get("lat"), (int, float)) and isinstance(base.get("lon"), (int, float)):
-            inside = _inside(b["candidates"][rep["main"]["name"]], base["lat"], base["lon"], pad_m=max(30, float(base.get("radius_m") or 0)))
-            if inside is False:
-                rep["main_mismatch"] = (f"result.json lat/lon is outside the board's main answer {rep['main']['name']} ({rep['main']['level']}): "
-                                        f"the answer's candidate isn't on that level, or the board ranking disagrees with the conclusion")
+    audit = _infra.audit(b, p, rep["main"]["name"] if rep["main"] else None)
+    rep["infrastructure_verification"] = audit
+    mp = Path(args.merge) if args.merge else None
+    base = json.loads(mp.read_text(encoding="utf-8")) if mp and mp.exists() else {}
+    rep["report_blockers"] = rep["level_gaps"] + (_merge_coordinate_check(b, rep, base) if mp else [])
+    blocked = getattr(args, "require_verified", False) and (not audit["infrastructure_ready"] or bool(rep["report_blockers"]))
+    for message in rep["report_blockers"]:
+        print(f"{'REPORT BLOCKER' if getattr(args, 'require_verified', False) else 'WARN'} {message}")
+    _print_infrastructure(audit)
+    if mp and not blocked:
         base["board"] = rep
         if rep["alternatives"]:
             base.setdefault("alternatives", [])
@@ -899,11 +1034,12 @@ def cmd_report(args, p: Path) -> None:
         base["unused_clues"] = rep["unused_clues"] or base.get("unused_clues", [])
         mp.write_text(json.dumps(base, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"Merged into {mp} (board field + alternatives/excluded/unused_clues)")
-    print(json.dumps(rep, ensure_ascii=False, indent=1)[:4000])
-    for w in rep["level_gaps"] + ([rep["main_mismatch"]] if rep.get("main_mismatch") else []):
-        print(f"WARN {w}")
+    print(json.dumps({key: value for key, value in rep.items() if key != "infrastructure_verification"}, ensure_ascii=False, indent=1)[:4000])
     if rep["main"] and rep["alternatives"]:
         print("\nReminder: main answer = first place, alternatives listed separately; no midpoint, no big circle.")
+    if blocked:
+        print("Strict report blocked; no merged result was written. Resolve the listed blockers or keep a broad conclusion.")
+        raise SystemExit(2)
 
 
 SUB_LEVELS = {"admin2", "city", "district"}   # children may record a prefecture as district; these count as one tier for name matching
@@ -1123,6 +1259,18 @@ def main() -> None:
     c.add_argument("--resolves", action="append", metavar="CLUE_ID",
                    help="earlier clue actually tested by this computed result; repeatable, requires --status computed and an existing --file")
 
+    ins = sub.add_parser("inspect", help="record visible infrastructure before precise verification")
+    ins.add_argument("--infra", choices=["present", "absent", "unclear"], required=True)
+    ins.add_argument("--file", required=True, help="existing inspected image/crop or inspection artifact")
+    ins.add_argument("--why", required=True, help="what was inspected and what can be seen")
+
+    ver = sub.add_parser("verify", help="record a candidate-specific comparison of an observed/read infrastructure clue")
+    ver.add_argument("--candidate", required=True)
+    ver.add_argument("--clue", required=True)
+    ver.add_argument("--outcome", choices=_infra.OUTCOMES, required=True)
+    ver.add_argument("--file", required=True, help="existing comparison artifact; its SHA-256 is recorded")
+    ver.add_argument("--why", required=True, help="relationships compared and basis for this outcome")
+
     e = sub.add_parser("evidence")
     e.add_argument("--clue", required=True)
     e.add_argument("--for", dest="for_", action="append", help="name:likelihood_ratio (>1), repeatable; name alone defaults to 3")
@@ -1161,10 +1309,14 @@ def main() -> None:
     k = sub.add_parser("check")
     rank_opts(k)
     k.add_argument("--evidence", help="evidence image path (default: evidence.jpg next to board.json)")
+    k.add_argument("--candidate", help="main candidate at a chosen level; must be first place at that level")
+    k.add_argument("--require-verified", action="store_true", help="fail on existing checks or incomplete infrastructure review of the main candidate")
 
     rp = sub.add_parser("report")
     rank_opts(rp)
     rp.add_argument("--merge", help="merge into an existing result.json")
+    rp.add_argument("--candidate", help="report this level's first-place candidate (e.g. the final point, instead of a road frontier)")
+    rp.add_argument("--require-verified", action="store_true", help="refuse a merged report until the main candidate's infrastructure review is complete")
 
     ap_ = sub.add_parser("apply", help="lookup clues add candidates and evidence automatically (clues.py)")
     ap_.add_argument("--kind", required=True, help="calling-code/driving-side/territories, or a region-pack kind (plate, area-code, …: `regions.py list`)")
@@ -1184,6 +1336,7 @@ def main() -> None:
     args = ap.parse_args()
     p = args.board
     fn = {"init": cmd_init, "add": cmd_add, "children": cmd_children, "clue": cmd_clue, "evidence": cmd_evidence,
+          "inspect": cmd_inspect, "verify": cmd_verify,
           "exclude": cmd_exclude, "scan-bbox": cmd_scan_bbox, "urban": cmd_urban, "falsify": cmd_falsify,
           "rank": cmd_rank, "next": cmd_next, "check": cmd_check, "report": cmd_report, "apply": cmd_apply, "log": cmd_log,
           "country": cmd_country, "move": cmd_move}
