@@ -1,6 +1,6 @@
 # Search: reverse image search, keyword image search, social media search
 
-Use at step 3, in parallel with lookup-table clues. In 5 of the 20 puzzles in the videos this step was the breakthrough, yet it costs the least.
+Use at step 3, in parallel with lookup-table clues. In 5 of the 20 puzzles in the videos this step was the breakthrough, yet it costs the least. First review applicable case context and record actual region × feature × method queries as described in [search review](search-review.md). Search results can generate candidates; an empty query is not a geographic exclusion.
 
 ## 1. Reverse image search
 
@@ -47,6 +47,8 @@ Without a browser tool, when Baidu and Yandex both have no results and the frame
 
 Write queries in the local language as well as English. `revimg.py --query "<words>"` runs keyword search on Chinese engines only (Bing China, Baidu Images, Sogou Images); elsewhere use your general web and image search tools. Region packs describe which local engines and platforms work and how to phrase queries (`regions.py show <cc>`).
 
+Include an early `<applicable region> + <observed scene>` query and a version without the favored place name. Save the query and result artifact with `board.py search`; initial checks do not establish exhaustive coverage. When results keep repeating, change the observed feature or source as well as the place name. For a rural scene, field roads, waterways, village/facility alignment and bridges may distinguish candidates more effectively than a generic vegetation description.
+
 ### After a hit
 
 - **Look at the rest of the set**: the hit post is often a set of images, and the others may show plates, road signs or shop names (v009: the plate was in the 5th image of the set). First use shared fixed objects (streetlights, walls, chimneys) to confirm that the photos in the set and the puzzle image are the same place.
@@ -64,7 +66,8 @@ Region packs add local platforms per object type (`regions.py show <cc>`).
 | Statues, small park features, foreign attractions | User photos on travel review sites (Tripadvisor and local equivalents); Google Lens | v010-6 |
 | New residential developments, commercial complexes | Development albums and listing photos on local property sites; page all the way to the signboard | v010-5 |
 | Old buildings, historic sites | Local culture-and-tourism and protected-heritage-site pages; stock image sites (Getty, Alamy and local agencies), whose captions carry place names and years | v004 |
-| Ordinary streets and residential areas | Image search adds little; prioritize geometry and infrastructure; when even the city isn't fixed, sample one page of arterial-road street view per candidate city and compare municipal fixtures (the street-view script the region pack names) | — |
+| Ordinary streets and residential areas | Try a bounded place-plus-distinctive-feature query before moving to geometry and infrastructure; when even the city isn't fixed, sample street view per candidate and compare municipal fixtures. Record which features were actually tested instead of repeatedly querying generic street scenes | — |
+| Farmland, estuaries and scattered settlements | Query the plausible region plus the observed combination, then compare roads, channels, bridges and facility alignments in satellite/ground imagery. Retain rural extents rather than defaulting to the nearest town center | Search-review workflow |
 | Sub-brand stores of chain brands (truck service, refurbishment, specialty stores) | **Search opening press releases first** ("开业 / inaugura / abre / opens + sub-brand + state or city"; 开业 = opens), trade media often give the street address; treat the official store locator only as a candidate pool: it doesn't tag sub-brands, and its coordinates may be off by several km | blind test |
 | Nameless facilities found on satellite imagery (plants, warehouses, farms, mines) | Search the web and news for the facility-type word in the local language + nearby place names, and compare the accompanying photos with the facade; once you find the name, search images another round | v013 |
 | Vehicle livery (bus, taxi, school bus) | `revimg.py --query "<city> <color description> bus"` in the local language, and read route signs and company names from the result images; first resolve any place name you read to a district with `poi.py` before using it; don't treat a vehicle from district A as a clue for district B | v014 |

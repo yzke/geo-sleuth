@@ -1,6 +1,6 @@
 # Geolocation workflow lab
 
-This fork extends [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth) from development base `b5419379c1936d6ee07283950fa3ac1fb81563e8`, integrated with upstream `418aea2` before publication. It adds measurement, street-image and infrastructure-verification workflows to the existing Agent Skill. The implementation is maintained in [yzke/geo-sleuth](https://github.com/yzke/geo-sleuth) for further testing before an upstream contribution.
+This fork extends [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth) from development base `b5419379c1936d6ee07283950fa3ac1fb81563e8`, integrated with upstream `418aea2` before publication. It adds measurement, street-image, infrastructure-verification and search-review workflows to the existing Agent Skill. The implementation is maintained in [yzke/geo-sleuth](https://github.com/yzke/geo-sleuth) for further testing before an upstream contribution.
 
 ## Design and scope
 
@@ -68,6 +68,18 @@ Independent review found a strict-export inconsistency: a checked candidate A co
 An independent agent also received only the photograph embedded in a private methodology PDF, with no location, expected clue list or access to the surrounding case narrative. It inspected the scene, eight edge/corner crops and five focused crops, registered the visible lattice-like tower, and retained unknown conductor count, voltage, possible second-tower identity and solar orientation. It created a clue board, evidence sheet and follow-up verification tasks. Strict checks returned exit 2 because no geographic candidate could be verified from the permitted offline inputs. This validates one instance of clue retention and uncertainty handling, not a successful location solve or a blind accuracy benchmark.
 
 The run used existing local dependencies after the isolated environment lacked Pillow; it did not download models, upload the image or access map services. Its private artifacts remain in the lab workspace. A logging refinement followed: visibility limitations are attributes or image-quality notes, not separate positive infrastructure constraints, and a faint shape's possible tower identity remains inferred.
+
+## Search coverage and evidence revision update
+
+A search can rank its existing candidates correctly while never considering an applicable region. The new `context` and `search` records expose declared regions missing from the pool or lacking an initial scene query. Queries retain candidate scope, case/photo identity, outcome and artifact fingerprints. A query for another region, a changed artifact or a service failure cannot complete that initial check. One completed query is not exhaustive geographic coverage, and the board cannot discover context the agent never records.
+
+The `scene` command and justified `scan-bbox` scopes keep rural, coastal and mountain searches from automatically shrinking to built-up land. A scene correction archives old scan scopes for review. Correcting a clue with `revise` invalidates registered dependent scores and reopens stale exclusions while preserving their history. Repeated candidate/clue entries use the latest value, and a shared dependency or source group contributes at most one same-direction weight. Opposing weights in the same chain require review. These are explicit bookkeeping rules, not an automatic assessment of scientific independence or a calibrated probability model.
+
+Offline validation: `python3 -m pytest -q skills/geo-sleuth/tests` passed **209 tests and 90 subtests**, including 56 new search-audit, reasoning and board CLI regressions. Skill frontmatter validation and whitespace checks passed. Independent review found and verified the fix for a shared-source connection being lost when evidence was grouped before parent/child inheritance; the regression now preserves the connection and counts it once. No outstanding correctness findings remained in that review.
+
+An independent agent then used the skill on an offline synthetic field-and-turbine illustration, a previous candidate board and a corrected date note. It received no expected answer or command sequence and had no access to the implementation, tests or live map services. It added the missing context region, corrected the date through `revise`, retained the reopened candidate, stopped counting the old derived score and registered unavailable comparisons as deferred. Its report retained all three tied candidates and made no coordinate claim. Independent artifact grading passed 10 checks, including strict export returning exit 2 without overwriting the broad report. This is one workflow evaluation, not a real-photo solve or an accuracy benchmark. Artifacts remain under `<lab-state>/workspace/search-review-eval/`, outside the public repository.
+
+The bilingual README describes these additions separately from upstream demonstrations. New public examples and fixtures use generic or synthetic inputs; private methodology documents, case photographs, conversations and personal activity regions are not published.
 
 ## Limits
 

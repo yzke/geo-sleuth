@@ -13,7 +13,7 @@ The work is split into three layers. Remember this first, then read the flow:
 
 | Layer | Who | Tools |
 |---|---|---|
-| Decision: which candidates exist, how evidence is scored, whether a candidate can be excluded, what to scan next | **Script** (candidate board) | `board.py` |
+| Bookkeeping: candidate ranking, recorded search coverage, evidence dependencies, exclusion checks and next-step prompts | **Script** (candidate board) | `board.py` |
 | Perception: reading text, table lookups, finding targets in satellite imagery, street-view matching | **Scripts compute and rank first; you look only at the top few** | `intake.py` `ocr.py` `clues.py` `sat_scan.py` `match.py` `geo.py bearings` |
 | Judgment: pulling clues out of the image, proposing hypotheses when the tables have nothing, deciding among the machine's top few | **You** | — |
 
@@ -34,6 +34,7 @@ The method comes from breaking down 14 photo-geolocation (网络迷踪) creator 
 10. ★ **Population and fame are not evidence**; scan order follows "share ÷ pages" (`board.py next`): finish the small districts first, put large districts last with a page cap.
 11. **A calculation does not verify its inputs.** Keep measured pixels, sourced dimensions and assumed camera parameters separate. Multiple results derived from the same measurement are one evidence chain. `measure.py` and `street.py` produce artifacts for review, not automatic likelihood ratios or exclusions. A failed street-image request, unusable image or low similarity score is not evidence that a location is wrong.
 12. ★ **Visible infrastructure needs candidate-specific review.** Record the frame review with `board.py inspect --infra present|absent|unclear --file <photo> --why "…"`. Visible towers, power lines and their crossing/parallel relationships become observed `infra` clues, including uncertain details. Before a precise conclusion, compare them against the proposed camera candidate with `board.py verify`; scoring a clue or linking a calculation does not complete that check. Read `references/power-infrastructure.md` for bundled conductors and power-line crossings. The script checks records and artifact freshness; it does not recognize towers or certify a geographic error radius.
+13. ★ **Review the search pool and the premises, not only its winner.** Register applicable case context and its source, or explicitly record that none applies. Context suggests regions to test; it does not confirm them. Record queries and choose scan extents for the observed scene. Register dependencies and shared evidence groups; revise a mistaken premise before reusing derived scores or exclusions. `next/check/report` surface recorded gaps and stale evidence, but cannot discover unrecorded context or prove exhaustive coverage. Read `references/search-review.md` when initializing or revisiting a search.
 
 ## Measurement and street-image workflow contract
 
@@ -62,11 +63,12 @@ uv run ${CLAUDE_SKILL_DIR}/scripts/board.py init --photo photo.jpg
 
 `intake.py` usually takes 1–2 minutes, longer on the first run because it installs dependencies: give the command a generous timeout (10+ minutes) or run it in the background. If a command timeout interrupts it, the reverse-image-search subprocesses may still be writing into `rev/`, but `intake.md` won't be generated; don't treat it as finished.
 
-`intake.md` contains: metadata, OCR text (lines read from upscaled/tiled passes are marked pass=up/tile and are hypotheses), Baidu similar images (source-site counts + numbered contact sheet), reverse-image-search labels with tiered vote counts, likely residential compound/development names, the list of edge crops, and failed items. Then you do four things:
+`intake.md` contains: metadata, OCR text (lines read from upscaled/tiled passes are marked pass=up/tile and are hypotheses), Baidu similar images (source-site counts + numbered contact sheet), reverse-image-search labels with tiered vote counts, likely residential compound/development names, the list of edge crops, and failed items. Then review:
 
+- **Case context before candidate generation**: carry over only explicitly related photos or user-provided context whose applicability to this photo is established. Record the source, relationship and regions to test with `board.py context`; if none applies, use `context --none --why "…"`. Keep these records local to the case. Record the scene with `board.py scene --kind urban|rural|coastal|mountain|unknown --why "…"`; uncertain scenes stay `unknown`. Workflow and command examples: `references/search-review.md`.
 - **Look at the image**: go through every crop in `edges/` (four edges, four corners); run through the checklist in `references/observe.md`; log each clue with `board.py clue "<text>" --kind <kind> --status observed|read|inferred|computed --file <zoomed crop>`. Be honest about status: text you read is read; "the building is probably 8 floors", "the road goes uphill" are inferred.
 - **Account for infrastructure even if another clue finds the place**: save the `inspect` record above. A visible tower or line remains a candidate check; if details cannot be read, log that uncertainty instead of omitting the object. `present` without an observed/read infrastructure clue remains pending.
-- When a computed result actually tests an earlier clue, link it with `clue "<result>" --kind <kind> --status computed --file <output> --resolves K1` (repeat `--resolves` for multiple clues). An unrelated computation does not resolve a pending infrastructure clue; this link records the test, not support for a location.
+- When a computed result actually tests an earlier clue, link it with `clue "<result>" --kind <kind> --status computed --file <output> --resolves K1` (repeat `--resolves` for multiple clues). A resolved clue is also a dependency; register other calculation inputs, such as capture time, with `--depends-on` and shared evidence chains with `--group` as described in `references/search-review.md`. An unrelated computation does not resolve a pending infrastructure clue; this link records the test, not support for a location.
 - **Lookup tables**: calling codes, driving side, overseas territories are global; plates, area codes and other country tables come from region packs → `clues.py lookup <kind> <value> [--country <cc>]` (without `--country`, every pack is searched and matches from several countries are all returned). For those that resolve to an admin division, use `board.py apply --kind plate --value <plate prefix> --file <zoomed crop>` directly (adds candidates and evidence automatically; the other candidates at the same level are only down-weighted, not excluded).
 - **Reverse-image-search results**: first open `rev/<name>_baidu_similar.jpg` (the top-left tile is the query image) and look for near-duplicates of the same object or the same scene; if there are any, go by number to `similar[i].from` in the JSON to see the source page; compound, development or hotel names in the labels → `poi.py "<name>" --city <city> --out pois.json` to get coordinates; for same-name hits (several campuses, several branches) put them all on the board with `board.py add --from pois.json --level area`, then check; always open the screenshots, and once a post hits, look through the rest of its photo set. Choose where to search by object type (`references/search.md`).
 - **Hints and metadata**: log each as an inferred clue and state how credible it is; IP location only says where the person was when posting, and the posting time is not the capture time.
@@ -81,16 +83,17 @@ uv run ${CLAUDE_SKILL_DIR}/scripts/board.py rank
 uv run ${CLAUDE_SKILL_DIR}/scripts/board.py next
 ```
 
-`next` only ever says one of two things:
+Follow outstanding context, coverage or evidence-review actions from `next` before narrowing. Then:
 - **Can't separate**: run discriminating tests from cheap to expensive, each one on all candidates at once — lookup tables → terrain (plain vs. hill city, `tiles.py fetch --zoom 13` or `terrain.py`) → vehicle livery (image search for "<city> <color> bus" in the local language; read route signs from the result images, compare the stripe along the bus rear by district) → street fixtures (street view per candidate built-up area) → river/road-network templates. Still can't separate after all of them: don't stop; scan in the "share ÷ pages" order it gives. `next` replaces these lines with the region pack's tips when the board's country is known.
-- **Ready to narrow**: first narrow the extent to the built-up area with `board.py urban <candidate>` (or give it by hand with `scan-bbox`), then write a falsification condition with `board.py falsify <candidate> --text "…"`, then go to step 3.
+- **Ready to narrow**: choose the extent for the scene. Use `board.py urban <candidate>` for an urban scene; use `scan-bbox --scope farmland|waterway|corridor|overview|other --why "…"` for justified fields, waterways, routes or a broader overview. Unknown scenes retain their wider extent until there is a reason to narrow. Write a falsification condition with `board.py falsify <candidate> --text "…"`, then go to step 3. A smaller scan rectangle is a search priority, not an exclusion of the remaining area.
 
-The coarse environmental-location rules still apply: terrain before river width and building color; phenology must be paired with the month; take the intersection of rare facility combinations; recognizable species are only an exclusion tool; when all you have is a land type, first narrow to that type of land with a land-cover map (`references/clues/`).
+The coarse environmental-location rules still apply: terrain before river width and building color; phenology must be paired with the month and uncertainty in the species identification; take the intersection of rare facility combinations. Vegetation and broad climate tendencies alone do not justify excluding an entire region. When all you have is a land type, prioritize that type with a land-cover map while retaining the untested extent (`references/clues/`).
 
 ### Step 3: pick a branch to narrow down
 
 | What you have | Approach | Read |
 |---|---|---|
+| Case context, missing candidate regions, repeated unsuccessful searches, or a corrected premise | Review candidate/query coverage; change the search feature or method; recompute stale dependent evidence | `search-review.md` |
 | A unique anchor (building, statue, tower, scenic-area building) | Anchor geometry: sight-line intersection, alignment lines, tangent lines, filtering buildings by camera height | `geometry.md` |
 | Known object size + pixel span, or a vertical object and its shadow with camera calibration | `measure.py range / shadow`: check focal/crop provenance, reconstruct geometry, return conditional intervals and explicit missing inputs | `measurement-workflow.md` |
 | Distant mountains, skyline | Render candidate camera positions with `terrain.py view` and compare; this fixes only one sight line, then find a second constraint. No EXIF: don't assume the main camera (distant mountains are often zoomed); a best focal on the edge of the searched range means widen and rerun. Near range in front of a far one: score both layers | `geometry.md` |
@@ -148,7 +151,7 @@ uv run ${CLAUDE_SKILL_DIR}/scripts/board.py check --candidate '<final camera poi
 uv run ${CLAUDE_SKILL_DIR}/scripts/board.py report --candidate '<final camera point>' --require-verified --merge result.json
 ```
 
-These strict commands are for a precise camera claim; the named point must be on the board and first at its level. For an unresolved broader conclusion, omit `--require-verified` and select the supported candidate level. Keep the infrastructure blockers visible in the explanation.
+These strict commands are for a precise camera claim; the named point must be on the board and first at its level. Review case context, stale evidence and candidate-specific infrastructure blockers. For an unresolved broader conclusion, omit `--require-verified` and select the supported candidate level. Keep outstanding review items visible in the explanation.
 
 Show `evidence.jpg` to the user together with the answer, without waiting to be asked. A road-level claim from satellite imagery needs a ≥z18 crop, not a z17 glance.
 
@@ -174,13 +177,13 @@ Use English for tool messages, report headings and generated labels. Preserve so
 ## Budget and stopping conditions
 
 - `intake.py` counts as one call; if reverse image search with 3 different keyword sets finds nothing, stop and go back to the checklist for other clues.
-- **While candidates still can't be separated, don't scan any point one by one** (when `board.py next` says "can't separate", do the discriminating tests first); if they still can't be separated after the cheap tests, scan in the order it gives, the first 3 pages of each candidate's built-up area first.
+- **While candidates still can't be separated, don't scan any point one by one** (when `board.py next` says "can't separate", do the discriminating tests first); if they still can't be separated after the cheap tests, scan in the order it gives, the first 3 pages of each candidate's scene-appropriate extent first.
 - Scanning and confirmation always rank first: look at the top 30 cells from `sat_scan.py` and the top 10 images from `match.py`; widen only when all of the top ones are wrong, instead of paging through.
 - Run `osm.py coverage` before enumerating candidates with OSM: districts with sparse data get silently excluded; switch to `sat_scan.py grid` and say so in the conclusion.
 - Scan panoramas in batches of at most 500 points per area. When a batch or several areas yield no match, review candidate generation, search coverage and down-weighted candidates; then change the approach or widen the justified search scope. A fixed number of unmatched areas is not a reason to end the investigation.
 - A failed or unavailable service blocks that route, not the whole investigation. Consider other feasible sources or methods; do not repeat unchanged failing requests.
 - Before stopping, `board.py check`: go back through the top 20 candidates, in ranking order, that were down-weighted by inference but not excluded.
-- Before claiming a precise camera point, use `board.py check --require-verified` and `board.py report --require-verified --merge result.json` (both accept `--candidate <final point>`). Read the infrastructure blockers even if the clue was already scored. A nonzero result means the precise claim remains unverified; a broad report can still be produced without the flag. Passing this gate does not replace independent geometric or ground-image verification.
+- Before claiming a precise camera point, use `board.py check --require-verified` and `board.py report --require-verified --merge result.json` (both accept `--candidate <final point>`). Read context, evidence-freshness and infrastructure blockers even if a clue was already scored. A nonzero result means the precise claim remains unverified; a broad report can still be produced without the flag. Passing this gate does not replace independent geometric or ground-image verification.
 - Conclude when evidence supports the requested location level, the user asks to stop or a user-set budget is reached, or no remaining feasible action is likely to distinguish the candidates. If unresolved, use `board.py report` to state the supported level, actual search coverage, attempted routes, blockers and missing evidence; do not invent a coordinate or precision to finish.
 
 ## Runtime environment

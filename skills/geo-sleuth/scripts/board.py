@@ -19,12 +19,16 @@ Rules are written as code, not left to self-discipline:
   add        add candidates (country/province/city/district/area/point); --from bulk-imports output of poi.py / gazetteer.py / osm.py geom
   children   use gazetteer.py to add every subdivision of an admin area as a candidate ("list the whole category first")
   clue       record a clue: seen / text read / inferred / computed
+  revise     correct a clue and invalidate registered dependent evidence
+  context    record applicable case context, or an explicit review finding none
+  search     record a candidate-specific query and its saved result or limitation
+  scene      record the observed scene type before choosing a scan extent
   inspect    record whether infrastructure is visible in the input frame
   verify     record a candidate-specific infrastructure comparison, with file fingerprints
   evidence   a clue's likelihood ratio for some candidates (>1 supports, <1 opposes)
   exclude    exclude a candidate (needs a computed file)
-  scan-bbox  set a candidate's scan extent (built-up area); pages are counted from it
-  urban      fill scan-bbox automatically with gazetteer.py urban
+  scan-bbox  set a justified, scene-appropriate scan extent with --scope and --why
+  urban      fill scan-bbox with gazetteer.py urban after an explicit urban scene review
   falsify    write the falsification condition before scanning/confirming
   rank       current ranking (score, share, evidence, pages, share/page)
   next       suggested next step
@@ -37,11 +41,13 @@ Rules are written as code, not left to self-discipline:
 
 Examples:
   board.py init --photo photo.jpg
+  board.py context --none --why "No applicable context was supplied for this photo"
   board.py children <municipality or province name>       # all 38 districts become candidates, uniform prior
   board.py add --from pois.json --level area --parent <city>   # fine-level candidates (same-name campuses, OSM walled compounds) all go on the board; don't hand-pick
   board.py clue "bus yellow on top, green below; green rear stripe curves down" --kind livery --status observed --file bus_zoom.png
   board.py evidence --clue K1 --for <district A>:5 --for <district B>:2 --why "compared bus rears one by one across both districts' bus photos" --file livery_sheet.jpg
   board.py apply --kind plate --value <first two plate characters>
+  board.py scene --kind urban --why "Dense streets and buildings dominate the reviewed frame"
   board.py urban <district A> --within <municipality or province name>
   board.py rank
   board.py next
@@ -65,6 +71,8 @@ from pathlib import Path
 
 import regions
 import _infra
+import _reasoning
+import _search_audit
 
 HERE = Path(__file__).parent
 # uv run writes its own path into the UV env var: call child scripts with it, so uv is found even when it isn't on PATH (e.g. just installed, terminal not reopened)
@@ -101,7 +109,9 @@ def _clue_kind(kind: str) -> str:
 def _load(p: Path) -> dict:
     if not p.exists():
         sys.exit(f"No {p}: run `board.py init --photo photo.jpg` first")
-    return json.loads(p.read_text(encoding="utf-8"))
+    b = json.loads(p.read_text(encoding="utf-8"))
+    _reasoning.refresh(b)
+    return b
 
 
 def _save(p: Path, b: dict) -> None:
@@ -144,9 +154,10 @@ def _pages(bb: list[float], zoom: int, cell: int, cols: int) -> int:
     return math.ceil(r * c / (cols * cols))
 
 
-def _inherited(b: dict, name: str, own_clues: set[str]) -> list[dict]:
+def _inherited(b: dict, name: str, own_clues: set[str], evidence: list[dict] | None = None) -> list[dict]:
     """Support flows up, refutation doesn't: a point that matches supports its road, a point that doesn't match says nothing about the rest of the road.
     Per clue the strongest supporting evidence among descendants, for clues the candidate has no evidence of its own."""
+    evidence = _reasoning.current_evidence(b) if evidence is None else evidence
     kids: dict[str, list[str]] = {}
     for n, c in b["candidates"].items():
         if c.get("parent") and c.get("status") != "excluded":
@@ -158,7 +169,7 @@ def _inherited(b: dict, name: str, own_clues: set[str]) -> list[dict]:
             continue
         seen.add(n)
         todo += kids.get(n, [])
-        for e in b["evidence"]:
+        for e in evidence:
             if e["candidate"] == n and e["lr"] > 1 and e["clue"] not in own_clues and e["lr"] > best.get(e["clue"], {}).get("lr", 1):
                 best[e["clue"]] = {**e, "via": n}
     return list(best.values())
@@ -166,6 +177,7 @@ def _inherited(b: dict, name: str, own_clues: set[str]) -> list[dict]:
 
 def _scores(b: dict, level: str, prior_by: str) -> list[dict]:
     rows = []
+    current = _reasoning.current_evidence(b)
     for name, c in b["candidates"].items():
         if c["level"] != level:
             continue
@@ -173,8 +185,9 @@ def _scores(b: dict, level: str, prior_by: str) -> list[dict]:
         if prior_by == "area" and c.get("bbox"):
             prior = max(_bbox_km2(c["bbox"]), 1.0)
         logit = math.log(prior) + math.log(max(c.get("prior", 1.0), 1e-9))
-        ev = [e for e in b["evidence"] if e["candidate"] == name]
-        ev += _inherited(b, name, {e["clue"] for e in ev})
+        ev = [e for e in current if e["candidate"] == name]
+        ev += _inherited(b, name, {e["clue"] for e in ev}, current)
+        ev = _reasoning.group_evidence(b, ev)
         for e in ev:
             logit += math.log(max(e["lr"], 1e-9))
         rows.append({"name": name, "logit": logit, "n_ev": len(ev),
@@ -208,7 +221,7 @@ def _cost_of(c: dict, args) -> tuple[int | None, str]:
     if not bb:
         return None, "no extent"
     pages = _pages(bb, args.zoom, args.cell, args.cols)
-    return pages, ("built-up area" if c.get("scan_bbox") else "whole-district bbox")
+    return pages, (f"{c.get('scan_scope', 'unreviewed')} scan extent" if c.get("scan_bbox") else "whole candidate bbox")
 
 
 # ---------------------------------------------------------------- subcommands
@@ -460,16 +473,41 @@ def cmd_clue(args, p: Path) -> None:
             sys.exit("--resolves requires --file pointing to an existing computed output file")
         output = str(Path(output).resolve())
     kind = _clue_kind(args.kind)
-    if kind == "infra" and output and Path(output).is_file():
+    if output and Path(output).is_file():
         output = str(Path(output).resolve())
+    depends = list(dict.fromkeys((getattr(args, "depends_on", None) or []) + resolves))
+    fields = _reasoning.clue_fields(b, depends, getattr(args, "group", None))
     b["clues"][kid] = {"text": args.text, "kind": kind, "status": args.status, "file": output,
-                       "source": args.source or "", "used": False}
+                       "source": args.source or "", "used": False, **fields}
     if resolves:
         b["clues"][kid]["resolves"] = resolves
     _log(b, f"clue {kid} [{kind}/{args.status}] {args.text}" + (f"; resolves {', '.join(resolves)}" if resolves else ""))
     _save(p, b)
     cap = LR_CAP[args.status]
     print(f"{kid} recorded. Status {args.status}: likelihood ratio cap {cap:g}" + (", can only rank, can't exclude" if args.status in ("inferred", "observed") else ", usable for exclude (still needs a computed file)"))
+
+
+def cmd_revise(args, p: Path) -> None:
+    b = _load(p)
+    output = args.file
+    if output:
+        if not Path(output).is_file():
+            raise ValueError("--file must point to an existing replacement artifact")
+        output = str(Path(output).resolve())
+    _reasoning.revise_clue(b, args.clue, text=args.text, file=output, why=args.why,
+                           depends_on=args.depends_on, group=args.group, status=args.status,
+                           source=args.source)
+    _log(b, f"revise {args.clue}: {args.why}")
+    _save(p, b)
+    print(f"Revised {args.clue}; dependent evidence and exclusions require fresh review.")
+
+
+def cmd_search_review(args, p: Path) -> None:
+    b = _load(p)
+    message = _search_audit.handle(args, b, p)
+    _log(b, message)
+    _save(p, b)
+    print(message)
 
 
 def cmd_inspect(args, p: Path) -> None:
@@ -489,6 +527,7 @@ def cmd_inspect(args, p: Path) -> None:
 def cmd_verify(args, p: Path) -> None:
     b = _load(p)
     name = _find(b, args.candidate)
+    _reasoning.evidence_fields(b, args.clue)
     try:
         record = _infra.verification_record(b, p, name, args.clue, args.outcome, args.file, args.why)
     except (OSError, ValueError) as error:
@@ -519,6 +558,7 @@ def cmd_evidence(args, p: Path) -> None:
     if args.clue not in b["clues"]:
         sys.exit(f"No clue {args.clue}; run `board.py clue` first")
     cl = b["clues"][args.clue]
+    fields = _reasoning.evidence_fields(b, args.clue)
     cap = LR_CAP[cl["status"]]
     pairs = _parse_lr(args.for_, 3.0) + [(n, v) for n, v in _parse_lr(args.against, 1 / 3)]
     if not pairs:
@@ -526,13 +566,13 @@ def cmd_evidence(args, p: Path) -> None:
     clipped = []
     for name, lr in pairs:
         cname = _find(b, name)
-        if lr <= 0:
-            sys.exit("A likelihood ratio of 0 means exclusion; use `board.py exclude` (needs a computed file)")
+        if not math.isfinite(lr) or lr <= 0:
+            sys.exit("Likelihood ratios must be finite and positive; use `board.py exclude` for an exclusion")
         lr2 = min(max(lr, 1 / cap), cap)
         if abs(lr2 - lr) > 1e-9:
             clipped.append(f"{cname}:{lr:g}→{lr2:g}")
         b["evidence"].append({"id": f"E{len(b['evidence']) + 1}", "clue": args.clue, "candidate": cname, "lr": lr2,
-                              "why": args.why or "", "file": args.file or "", "cmd": args.command_ or ""})
+                              "why": args.why or "", "file": args.file or "", "cmd": args.command_ or "", **fields})
     cl["used"] = True
     if args.file and not Path(args.file).exists():
         print(f"Note: {args.file} doesn't exist; evidence files must be real outputs of this session")
@@ -550,6 +590,7 @@ def cmd_exclude(args, p: Path) -> None:
     if args.clue not in b["clues"]:
         sys.exit(f"No clue {args.clue}")
     cl = b["clues"][args.clue]
+    fields = _reasoning.evidence_fields(b, args.clue)
     if cl["status"] not in ("read", "computed"):
         sys.exit(f"Clue {args.clue} is \"{cl['status']}\" (inferred/observed): it can't exclude, only `evidence --against {cname}:0.34`. "
                  f"Hard rule 9: exclusion and confirmation use the same standard.")
@@ -574,18 +615,117 @@ def cmd_exclude(args, p: Path) -> None:
                 f"not enough to exclude the whole thing. Add comparison images for the remaining stretches before excluding, or down-weight first: "
                 f"board.py evidence --clue {args.clue} --against {cname}:0.34 --file {args.computed}")
     c["status"] = "excluded"
-    c["excluded_by"] = {"clue": args.clue, "computed": args.computed, "why": args.why or "",
-                        "covers": args.covers or ""}
+    c["excluded_by"] = {"clue": args.clue, "computed": str(Path(args.computed).resolve()), "why": args.why or "",
+                        "covers": args.covers or "", "computed_artifact": _infra.artifact(args.computed), **fields}
+    c.pop("exclusion_review_required", None)
+    c["excluded_by"]["candidate_snapshot"] = _reasoning.exclusion_candidate_snapshot(b, cname)
     cl["used"] = True
     _log(b, f"exclude {cname} by {args.clue} ({args.computed})")
     _save(p, b)
     print(f"Excluded {cname}. Excluded candidates stay in the ledger; check looks back at them.")
 
 
+SCENES = ("urban", "rural", "coastal", "mountain", "unknown")
+SCAN_SCOPES = ("urban", "farmland", "waterway", "corridor", "overview", "other")
+
+
+def _validated_bbox(value: str | list) -> list[float]:
+    try:
+        bb = [float(v) for v in (value.split(",") if isinstance(value, str) else value)]
+    except (TypeError, ValueError):
+        raise ValueError("bbox must be s,w,n,e with finite geographic coordinates") from None
+    if (len(bb) != 4 or not all(math.isfinite(v) for v in bb)
+            or not -90 <= bb[0] < bb[2] <= 90 or not -180 <= bb[1] < bb[3] <= 180):
+        raise ValueError("bbox must be ordered s,w,n,e with finite geographic coordinates")
+    return bb
+
+
+def _set_scan(b: dict, name: str, bb: list[float], scope: str, why: str) -> None:
+    if not why or not why.strip():
+        raise ValueError("A scan scope needs --why explaining its scene-based extent")
+    scene = b.get("scene", {}).get("kind", "unknown")
+    if scope == "urban" and scene != "urban":
+        raise ValueError("Urban narrowing requires `scene --kind urban --why ...`; this scene is " + scene)
+    c = b["candidates"][name]
+    full = c.get("bbox")
+    if full:
+        full = _validated_bbox(full)
+        if not (full[0] <= bb[0] < bb[2] <= full[2] and full[1] <= bb[1] < bb[3] <= full[3]):
+            raise ValueError("scan bbox must stay within the original candidate bbox; add a separate candidate for another extent")
+    if c.get("scan_bbox"):
+        c.setdefault("scan_history", []).append({k: c.get(k) for k in ("scan_bbox", "scan_scope", "scan_why", "scan_scene")})
+    c.update(scan_bbox=bb, scan_scope=scope, scan_why=why.strip(), scan_scene=scene)
+    c.pop("scan_review_required", None)
+
+
+def cmd_scene(args, p: Path) -> None:
+    b = _load(p)
+    if not args.why.strip():
+        raise ValueError("--why must describe the scene review")
+    old = b.get("scene", {}).get("kind", "unknown")
+    record = {"kind": args.kind, "why": args.why.strip()}
+    b.setdefault("scene_reviews", []).append(record)
+    b["scene"] = record
+    if old != args.kind:
+        for c in b["candidates"].values():
+            if c.get("scan_bbox"):
+                c.setdefault("scan_history", []).append({k: c.get(k) for k in ("scan_bbox", "scan_scope", "scan_why", "scan_scene")})
+                c["scan_bbox"] = None
+                c["scan_review_required"] = f"Scene changed from {old} to {args.kind}; review the search extent"
+    _log(b, f"scene {args.kind}: {args.why}")
+    _save(p, b)
+    print(f"Scene recorded: {args.kind}. " + _scene_advice(b))
+
+
+def _scene_advice(b: dict) -> str:
+    kind = b.get("scene", {}).get("kind", "unknown")
+    if kind == "urban":
+        return "Use `urban` for built-up land or an explained `scan-bbox`; retain the unsearched original extent."
+    if kind == "rural":
+        return "Compare field blocks, drainage channels, village roads and observed infrastructure; set a farmland/waterway/corridor scan-bbox."
+    if kind == "coastal":
+        return "Compare shoreline, embankments, water channels and crossings; set a waterway/corridor scan-bbox."
+    if kind == "mountain":
+        return "Compare terrain and observed road/line corridors; set a corridor scan-bbox."
+    return "Review the scene first, or use a broad overview scan-bbox with a reason; unknown terrain must not default to built-up land."
+
+
+def _scan_audit(b: dict) -> dict:
+    blockers = []
+    for name, c in b["candidates"].items():
+        if c.get("status") == "excluded":
+            continue
+        if c.get("scan_review_required"):
+            blockers.append(f"{name}: {c['scan_review_required']}")
+        if c.get("scan_bbox"):
+            if not c.get("scan_scope") or not c.get("scan_why"):
+                blockers.append(f"{name}: scan extent has no reviewed scope/reason; record scan-bbox again")
+            elif c.get("scan_scene") != b.get("scene", {}).get("kind", "unknown"):
+                blockers.append(f"{name}: scan scope was recorded for a different scene")
+    return {"ready": not blockers, "blockers": blockers, "scene": b.get("scene"),
+            "scope": "Scene and declared scan extent review, not proof of exhaustive search."}
+
+
+def _workflow_audits(b: dict, p: Path) -> dict:
+    return {"search_review": _search_audit.audit(b, p),
+            "reasoning_review": _reasoning.audit(b), "scan_review": _scan_audit(b)}
+
+
+def _print_workflow_audits(reviews: dict) -> None:
+    for label, review in reviews.items():
+        print(f"{label}: {'reviewed' if review['ready'] else 'pending'}")
+        for key in ("blockers", "warnings", "suggestions"):
+            messages = review.get(key, [])
+            for message in messages[:10]:
+                print(f"  {key}: {message}")
+            if len(messages) > 10:
+                print(f"  {len(messages) - 10} further {key}; full records are in the board/merged report")
+
+
 def cmd_scan_bbox(args, p: Path) -> None:
     b = _load(p)
     cname = _find(b, args.name)
-    b["candidates"][cname]["scan_bbox"] = [float(v) for v in args.bbox.split(",")]
+    _set_scan(b, cname, _validated_bbox(args.bbox), args.scope, args.why)
     _log(b, f"scan-bbox {cname} {args.bbox}")
     _save(p, b)
     print("ok")
@@ -594,6 +734,8 @@ def cmd_scan_bbox(args, p: Path) -> None:
 def cmd_urban(args, p: Path) -> None:
     b = _load(p)
     cname = _find(b, args.name)
+    if b.get("scene", {}).get("kind") != "urban":
+        raise ValueError("`urban` requires an explicitly reviewed urban scene; run `scene --kind ... --why ...` and choose a suitable scan scope")
     cmd = [UV, "run", str(HERE / "gazetteer.py"), "urban", cname]
     if args.within:
         cmd += ["--within", args.within]
@@ -604,7 +746,7 @@ def cmd_urban(args, p: Path) -> None:
         sys.exit(f"gazetteer urban failed: {r.stderr.strip()[-600:]}")
     d = json.loads(r.stdout[r.stdout.index("{"):])
     if d.get("urban_bbox"):
-        b["candidates"][cname]["scan_bbox"] = d["urban_bbox"]
+        _set_scan(b, cname, _validated_bbox(d["urban_bbox"]), "urban", b["scene"]["why"] + f"; gazetteer source: {d.get('source')}")
         b["candidates"][cname]["urban_source"] = d.get("source")
         _log(b, f"urban {cname} {d['urban_bbox']} ({d.get('source')})")
         _save(p, b)
@@ -626,6 +768,8 @@ def cmd_falsify(args, p: Path) -> None:
 def cmd_rank(args, p: Path, quiet: bool = False) -> dict:
     b = _load(p)
     out = {}
+    if not quiet:
+        print("Shares are relative scores within recorded candidates, not geographic probabilities or search coverage.")
     for lv in LEVELS:
         rows = _scores(b, lv, args.prior_by)
         if not rows:
@@ -652,13 +796,16 @@ def _corridor_pending(b: dict) -> list[str]:
     """Infrastructure observations without a computed result explicitly addressing them."""
     infra = [k for k, c in b["clues"].items() if _clue_kind(c["kind"]) == "infra" and c["status"] in ("observed", "read")]
     done = {k for c in b["clues"].values()
-            if c["status"] == "computed" and c.get("resolves") and c.get("file") and Path(c["file"]).is_file()
+            if c["status"] == "computed" and not c.get("reasoning_stale") and c.get("resolves") and c.get("file") and Path(c["file"]).is_file()
             for k in c.get("resolves", [])}
     return [k for k in infra if k not in done]
 
 
 def cmd_next(args, p: Path) -> None:
     b = _load(p)
+    reviews = _workflow_audits(b, p)
+    _print_workflow_audits(reviews)
+    print("Scene: " + _scene_advice(b))
     pend = _corridor_pending(b)
     if pend:
         print(f"→ First: infrastructure clue {', '.join(pend)} has no linked corridor result yet. `osm.py geom '<filter>' --bbox <region> --out lines.geojson` → "
@@ -682,13 +829,16 @@ def cmd_next(args, p: Path) -> None:
     separable = (not second) or (top["share"] >= 0.7 and top["share"] / max(second["share"], 1e-9) >= 3)
     if separable and top["n_verified"] == 0 and second:
         print(f"{top['name']} leads but has no verified evidence at all (read/computed); it's built from inferences only: do one cheap verification before scanning.")
+    if separable and any(not audit["ready"] for audit in reviews.values()):
+        print("→ Review the pending context, search scope or stale reasoning above before narrowing the leading candidate. Independent searches can continue.")
+        return
     if separable:
         pages, src = _cost_of(top["c"], args)
         print(f"→ Ready to narrow/scan: {top['name']} ({src}, about {pages if pages is not None else '?'} pages).")
-        if src == "whole-district bbox":
-            print("  First `board.py urban <name>` or `scan-bbox` to shrink the extent to the built-up area; pages drop by an order of magnitude.")
+        if src == "whole candidate bbox":
+            print("  " + _scene_advice(b))
         elif pages is None:
-            print(f"  It has no extent yet: `board.py urban {top['name']} --within <parent>` or `board.py scan-bbox {top['name']} --bbox s,w,n,e`, otherwise pages can't be computed.")
+            print("  It has no extent yet: use an explained `scan-bbox --scope ... --why ...` suitable for the scene; otherwise pages can't be computed.")
         if top["name"] not in b["falsify"]:
             print(f"  Write the falsification condition before scanning: `board.py falsify {top['name']} --text \"…\"`")
         print("  Let the machine rank the scan first: `sat_scan.py grid --bbox <scan_bbox> --preset …`, `osm.py buildings`, `poi.py`; look only at the top 20–30.")
@@ -711,7 +861,7 @@ def cmd_next(args, p: Path) -> None:
     for ratio, r, pages, src in order[:8]:
         print(f"    {r['name']:<14} share {r['share']:.0%}  pages {pages if pages is not None else '?'} ({src})  share/page {ratio:.4f}")
     if any(pages is None for _, _, pages, _ in order):
-        print("    Some candidates have no extent: fill it in with `board.py urban` or `scan-bbox`, otherwise they can't be ordered")
+        print("    Some candidates have no extent: record a scene-appropriate `scan-bbox --scope ... --why ...` before ordering by scan cost")
 
 
 def _region_of(b: dict, rows: list[dict]) -> dict | None:
@@ -894,6 +1044,7 @@ def _merge_coordinate_check(b: dict, rep: dict, base: dict) -> list[str]:
 
 def cmd_check(args, p: Path) -> None:
     b = _load(p)
+    current = _reasoning.active_evidence(b)
     lv = _conclusion_level(b, args)
     ok = True
     print("Pre-conclusion check:")
@@ -921,7 +1072,7 @@ def cmd_check(args, p: Path) -> None:
             ok = False
             print(f"  FAIL evidence for excluding {name} covers only about {r[0]:.0%} (candidate extent diagonal {r[1]:.0f} m): exclusion scope exceeds evidence scope")
     for name, c in b["candidates"].items():
-        if c.get("status") != "excluded" and any(e["candidate"] == name and e["lr"] > 1 for e in b["evidence"]):
+        if c.get("status") != "excluded" and any(e["candidate"] == name and e["lr"] > 1 for e in current):
             hint = _skip_hint(b, name)
             if hint:
                 ok = False
@@ -944,7 +1095,7 @@ def cmd_check(args, p: Path) -> None:
             print(f"  WARN {len(unseen)}/{len(rows)} {LEVEL_LABEL[lv]} candidates have no evidence at all, i.e. were never looked at: "
                   f"{', '.join(unseen[:10])}{' …' if len(unseen) > 10 else ''} → look at each; record evidence --against even when it doesn't match; "
                   f"unseen ones don't count as excluded; state this in the conclusion")
-        down = [(e["candidate"], e["clue"]) for e in b["evidence"]
+        down = [(e["candidate"], e["clue"]) for e in current
                 if e["lr"] < 1 and b["clues"][e["clue"]]["status"] in ("inferred", "observed")
                 and b["candidates"][e["candidate"]].get("status") != "excluded"]
         if down:
@@ -955,7 +1106,7 @@ def cmd_check(args, p: Path) -> None:
             print(f"  WARN {k} is {c['status']} but has no file: text read needs a zoomed image, computed results need an output file")
     # fine-level answer needs the evidence image the Output section asks for
     fine = [n for n, c in b["candidates"].items() if c["level"] in ("area", "road", "point") and c.get("status") != "excluded"
-            and any(e["candidate"] == n and e["lr"] > 1 for e in b["evidence"])]
+            and any(e["candidate"] == n and e["lr"] > 1 for e in current)]
     if fine:
         ev = Path(args.evidence) if args.evidence else p.parent / "evidence.jpg"
         if not ev.exists():
@@ -977,6 +1128,12 @@ def cmd_check(args, p: Path) -> None:
     if not audit["infrastructure_ready"] and (getattr(args, "require_verified", False) or (fine_target and visible_infra)):
         ok = False
         print("  FAIL infrastructure verification of the main candidate is incomplete")
+    reviews = _workflow_audits(b, p)
+    _print_workflow_audits(reviews)
+    if any(not review["ready"] for review in reviews.values()):
+        print("  " + ("FAIL" if args.require_verified else "WARN") + " case/search/reasoning review remains pending")
+        if args.require_verified:
+            ok = False
     print("Result: " + ("pass" if ok else "has FAIL, fix those first"))
     if getattr(args, "require_verified", False) and not ok:
         raise SystemExit(2)
@@ -984,9 +1141,11 @@ def cmd_check(args, p: Path) -> None:
 
 def cmd_report(args, p: Path) -> None:
     b = _load(p)
+    current = _reasoning.active_evidence(b)
     lv = _conclusion_level(b, args)
     rep = {"candidate_levels": {}, "main": None, "alternatives": [], "excluded": [], "unused_clues": [],
-           "downweighted_not_excluded": [], "falsify": b["falsify"]}
+           "downweighted_not_excluded": [], "falsify": b["falsify"],
+           "score_interpretation": "Relative ranking within recorded candidates, not geographic probability or exhaustive search coverage."}
     for l2 in LEVELS:
         rows = _scores(b, l2, args.prior_by)
         if rows:
@@ -1002,36 +1161,38 @@ def cmd_report(args, p: Path) -> None:
         for r in rows[1:]:
             if r["share"] >= 0.05:
                 rep["alternatives"].append({"name": r["name"], "share": round(r["share"], 3),
-                                            "how_to_separate": "run one cheap test on both together (terrain/livery/municipal fixtures/water template), or scan the first 3 pages of each built-up area"})
+                                            "how_to_separate": "run the same cheap scene-feature query on both, then compare terrain, fixed structures or water/road layout; scan a scene-appropriate extent"})
         rep["unexamined"] = _unseen(rows, lv)
     rep["level_gaps"] = [h for n, c in b["candidates"].items() if c.get("status") != "excluded"
-                         and any(e["candidate"] == n and e["lr"] > 1 for e in b["evidence"]) for h in [_skip_hint(b, n)] if h]
+                         and any(e["candidate"] == n and e["lr"] > 1 for e in current) for h in [_skip_hint(b, n)] if h]
     for name, c in b["candidates"].items():
         if c.get("status") == "excluded":
             ex = c.get("excluded_by", {})
             rep["excluded"].append({"name": name, "clue": b["clues"].get(ex.get("clue"), {}).get("text", ""),
                                     "computed": ex.get("computed"), "why": ex.get("why", "")})
     rep["unused_clues"] = [c["text"] for c in b["clues"].values() if not c["used"]]
-    rep["downweighted_not_excluded"] = sorted({e["candidate"] for e in b["evidence"] if e["lr"] < 1
+    rep["downweighted_not_excluded"] = sorted({e["candidate"] for e in current if e["lr"] < 1
                                                and b["clues"][e["clue"]]["status"] in ("inferred", "observed")
                                                and b["candidates"][e["candidate"]].get("status") != "excluded"})
     audit = _infra.audit(b, p, rep["main"]["name"] if rep["main"] else None)
     rep["infrastructure_verification"] = audit
+    reviews = _workflow_audits(b, p)
+    rep.update(reviews)
     mp = Path(args.merge) if args.merge else None
     base = json.loads(mp.read_text(encoding="utf-8")) if mp and mp.exists() else {}
     rep["report_blockers"] = rep["level_gaps"] + (_merge_coordinate_check(b, rep, base) if mp else [])
-    blocked = getattr(args, "require_verified", False) and (not audit["infrastructure_ready"] or bool(rep["report_blockers"]))
+    blocked = getattr(args, "require_verified", False) and (not audit["infrastructure_ready"] or bool(rep["report_blockers"])
+                                                            or any(not review["ready"] for review in reviews.values()))
     for message in rep["report_blockers"]:
         print(f"{'REPORT BLOCKER' if getattr(args, 'require_verified', False) else 'WARN'} {message}")
     _print_infrastructure(audit)
+    _print_workflow_audits(reviews)
     if mp and not blocked:
         base["board"] = rep
-        if rep["alternatives"]:
-            base.setdefault("alternatives", [])
-            base["alternatives"] = [f"{a['name']} (share {a['share']:.0%}): {a['how_to_separate']}" for a in rep["alternatives"]] + \
-                [x for x in base.get("alternatives", []) if not isinstance(x, str) or "(share " not in x]
-        base["excluded"] = [f"{x['name']}: {x['why']} ({x['computed']})" for x in rep["excluded"]] or base.get("excluded", [])
-        base["unused_clues"] = rep["unused_clues"] or base.get("unused_clues", [])
+        base["alternatives"] = [f"{a['name']} (share {a['share']:.0%}): {a['how_to_separate']}" for a in rep["alternatives"]] + \
+            [x for x in base.get("alternatives", []) if not isinstance(x, str) or "(share " not in x]
+        base["excluded"] = [f"{x['name']}: {x['why']} ({x['computed']})" for x in rep["excluded"]]
+        base["unused_clues"] = rep["unused_clues"]
         mp.write_text(json.dumps(base, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"Merged into {mp} (board field + alternatives/excluded/unused_clues)")
     print(json.dumps({key: value for key, value in rep.items() if key != "infrastructure_verification"}, ensure_ascii=False, indent=1)[:4000])
@@ -1117,6 +1278,10 @@ def _country_key(b: dict, m: dict) -> str | None:
 
 def cmd_apply(args, p: Path) -> None:
     b = _load(p)
+    if not math.isfinite(args.lr) or args.lr <= 0:
+        raise ValueError("--lr must be finite and positive")
+    if args.clue and args.clue not in b["clues"]:
+        raise ValueError(f"Unknown clue {args.clue}")
     cl = HERE / "clues.py"
     country = args.country or b.get("country")
     # The country context only narrows region-pack lookups. Global kinds read --country as an observation target
@@ -1135,13 +1300,16 @@ def cmd_apply(args, p: Path) -> None:
     if not kid:
         kid = f"K{len(b['clues']) + 1}"
         b["clues"][kid] = {"text": f"{args.kind} {args.value}", "kind": args.kind, "status": "read",
-                           "file": args.file or "", "source": d.get("source", ""), "used": False}
+                           "file": args.file or "", "source": d.get("source", ""), "used": False,
+                           **_reasoning.clue_fields(b)}
+    fields = _reasoning.evidence_fields(b, kid)
     if not matches:
         what = "Lookup not supported" if d.get("status") == "unsupported" else "Lookup returned nothing"
         print(f"{what}: {d.get('note', '')}. Clue {kid} recorded, no evidence added.")
         _save(p, b)
         return
-    lr = args.lr
+    cap = LR_CAP[b["clues"][kid]["status"]]
+    lr = min(max(args.lr, 1 / cap), cap)
     touched: dict[tuple[str, str], None] = {}
     why = f"lookup {args.kind}={args.value}"
 
@@ -1151,7 +1319,7 @@ def cmd_apply(args, p: Path) -> None:
             return
         touched[(lv, cname)] = None
         b["evidence"].append({"id": f"E{len(b['evidence']) + 1}", "clue": kid, "candidate": cname, "lr": lr,
-                              "why": why, "file": args.file or "", "cmd": f"clues.py lookup {args.kind} {args.value}"})
+                              "why": why, "file": args.file or "", "cmd": f"clues.py lookup {args.kind} {args.value}", **fields})
 
     for m in matches:
         code = m.get("country_code")
@@ -1195,7 +1363,7 @@ def cmd_apply(args, p: Path) -> None:
             if c["level"] == lv and (lv, k) not in touched and c.get("status") != "excluded" and _norm(c.get("parent") or "") not in leaves \
                     and covered(k, c):
                 b["evidence"].append({"id": f"E{len(b['evidence']) + 1}", "clue": kid, "candidate": k, "lr": 1 / lr,
-                                      "why": f"lookup {args.kind}={args.value} doesn't point here", "file": "", "cmd": ""})
+                                      "why": f"lookup {args.kind}={args.value} doesn't point here", "file": "", "cmd": "", **fields})
     b["clues"][kid]["used"] = True
     _log(b, f"apply {args.kind}={args.value} → {[n for _, n in touched]}")
     _save(p, b)
@@ -1216,6 +1384,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--board", type=Path, default=Path("board.json"))
     sub = ap.add_subparsers(dest="cmd", required=True)
+    _search_audit.register_parsers(sub)
 
     def rank_opts(sp):
         sp.add_argument("--prior-by", choices=["none", "area"], default="none", help="prior: uniform (default) or by bbox area. There is no by-population option")
@@ -1256,8 +1425,24 @@ def main() -> None:
     c.add_argument("--status", required=True, help="/".join(STATUS))
     c.add_argument("--file", help="zoomed image, script output")
     c.add_argument("--source", help="where in the image, who said it")
+    c.add_argument("--depends-on", action="append", metavar="CLUE_ID", help="input clue used to derive this result; repeat for each input")
+    c.add_argument("--group", help="shared source group; correlated clues count once per candidate")
     c.add_argument("--resolves", action="append", metavar="CLUE_ID",
                    help="earlier clue actually tested by this computed result; repeatable, requires --status computed and an existing --file")
+
+    rev = sub.add_parser("revise", help="correct/recompute a clue; invalidate dependent evidence and exclusions")
+    rev.add_argument("clue")
+    rev.add_argument("--text")
+    rev.add_argument("--file")
+    rev.add_argument("--why", required=True)
+    rev.add_argument("--depends-on", action="append", metavar="CLUE_ID")
+    rev.add_argument("--group")
+    rev.add_argument("--status", choices=STATUS)
+    rev.add_argument("--source")
+
+    sc = sub.add_parser("scene", help="review the scene before choosing an urban/rural/corridor search extent")
+    sc.add_argument("--kind", required=True, choices=SCENES)
+    sc.add_argument("--why", required=True)
 
     ins = sub.add_parser("inspect", help="record visible infrastructure before precise verification")
     ins.add_argument("--infra", choices=["present", "absent", "unclear"], required=True)
@@ -1289,6 +1474,8 @@ def main() -> None:
     sb = sub.add_parser("scan-bbox")
     sb.add_argument("name")
     sb.add_argument("--bbox", required=True)
+    sb.add_argument("--scope", required=True, choices=SCAN_SCOPES)
+    sb.add_argument("--why", required=True, help="what in the scene justifies scanning this extent")
 
     u = sub.add_parser("urban")
     u.add_argument("name")
@@ -1310,13 +1497,13 @@ def main() -> None:
     rank_opts(k)
     k.add_argument("--evidence", help="evidence image path (default: evidence.jpg next to board.json)")
     k.add_argument("--candidate", help="main candidate at a chosen level; must be first place at that level")
-    k.add_argument("--require-verified", action="store_true", help="fail on existing checks or incomplete infrastructure review of the main candidate")
+    k.add_argument("--require-verified", action="store_true", help="fail on incomplete context/search/scope, stale reasoning or infrastructure review")
 
     rp = sub.add_parser("report")
     rank_opts(rp)
     rp.add_argument("--merge", help="merge into an existing result.json")
     rp.add_argument("--candidate", help="report this level's first-place candidate (e.g. the final point, instead of a road frontier)")
-    rp.add_argument("--require-verified", action="store_true", help="refuse a merged report until the main candidate's infrastructure review is complete")
+    rp.add_argument("--require-verified", action="store_true", help="refuse a merged report while context/search/scope, reasoning or infrastructure review is pending")
 
     ap_ = sub.add_parser("apply", help="lookup clues add candidates and evidence automatically (clues.py)")
     ap_.add_argument("--kind", required=True, help="calling-code/driving-side/territories, or a region-pack kind (plate, area-code, …: `regions.py list`)")
@@ -1336,11 +1523,15 @@ def main() -> None:
     args = ap.parse_args()
     p = args.board
     fn = {"init": cmd_init, "add": cmd_add, "children": cmd_children, "clue": cmd_clue, "evidence": cmd_evidence,
+          "context": cmd_search_review, "search": cmd_search_review, "scene": cmd_scene, "revise": cmd_revise,
           "inspect": cmd_inspect, "verify": cmd_verify,
           "exclude": cmd_exclude, "scan-bbox": cmd_scan_bbox, "urban": cmd_urban, "falsify": cmd_falsify,
           "rank": cmd_rank, "next": cmd_next, "check": cmd_check, "report": cmd_report, "apply": cmd_apply, "log": cmd_log,
           "country": cmd_country, "move": cmd_move}
-    fn[args.cmd](args, p)
+    try:
+        fn[args.cmd](args, p)
+    except (ValueError, OSError) as error:
+        ap.exit(2, f"Error: {error}\n")
 
 
 if __name__ == "__main__":

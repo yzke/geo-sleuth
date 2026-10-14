@@ -42,6 +42,10 @@ This fork of [Oldcircle/geo-sleuth](https://github.com/Oldcircle/geo-sleuth) add
 
 [Infrastructure cross-validation](skills/geo-sleuth/references/power-infrastructure.md) records visible towers and lines, keeps conductor-count observations separate from voltage hypotheses, preserves crossing members and source tags, and checks each final candidate before a precise conclusion. The board audits missing or stale comparisons; it does not perform automatic tower recognition or certify positional accuracy.
 
+[Search review](skills/geo-sleuth/references/search-review.md) adds case-local context, candidate coverage and query records, scene-appropriate scan extents, and revision tracking for dependent evidence. These checks help surface omitted regions, prevent rural scenes from defaulting to built-up areas, and avoid counting the same evidence chain repeatedly. Context remains a soft prior; a completed checklist is not proof of a location.
+
+The new workflow examples and regression tests use generic or synthetic scenarios, without private case histories or photographs. They test workflow behavior, not real-photo accuracy. The hero and gallery results below are upstream examples, not accuracy benchmarks for these fork additions.
+
 ## Quick start
 
 ```bash

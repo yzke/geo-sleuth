@@ -25,7 +25,7 @@
 | `clues.py` | Lookup tables: country calling codes, driving side, overseas territories (`data/`); plates, area codes, admin hierarchy and other country tables from region packs (`--country`) |
 | `regions.py` | Region packs: `list`, `show <cc>` (lookups, services, tips, clue index with line numbers), `lint` (pack contract) |
 | `refresh.py` | Maintainers: re-fetch the global tables and the China pack's tables from their sources |
-| `board.py` | Candidate board: candidates, clues, evidence likelihood ratios, exclusions (require a computed file), ranking, scan cost, next step, pre-conclusion check, generates result.json fields |
+| `board.py` | Candidate board: case context and query ledger, scene/scan scope, clues and registered dependencies, grouped evidence scores, exclusions (require a computed file), ranking, scan cost, pre-conclusion checks and result.json fields; see [search review](search-review.md) |
 | `gazetteer.py` | Admin-division gazetteer: lists all subdivisions (with bbox), built-up area extents, scan pages |
 | `sat_scan.py` | CLIP zero-shot scoring and ranking of satellite grid cells/candidate points (sports fields, factory buildings, silos, dams…), top-N thumbnails + heatmap |
 | `match.py` | Ranks the photo against candidate ground-level images: DINOv2 global similarity + SIFT inlier re-ranking; candidates can be rendered on the fly from panorama ids |
@@ -132,6 +132,8 @@ The endpoints are all at `https://mapsv0.bdimg.com/`, need no key, and must be a
 | Source | Use |
 |---|---|
 | `sun.py` (NOAA algorithm, within ≤0.02° of NREL SPA) | Sun position; replaces SunCalc |
-| Historical daily weather (temperature, sun/rain) | Check "frozen", "sunny"; with a date, exclude overcast or rainy areas |
-| Historical weather-satellite cloud imagery | Exclude large cloud areas on that day (clearly effective only with typhoons and fronts) |
+| Historical daily weather (temperature, sun/rain) | Coarse context only: a daily rain/overcast summary cannot exclude a short sunny interval. Seek observations for the actual capture window and candidate area |
+| Historical weather-satellite cloud imagery | Compare cloud patterns for the capture time and direction, retaining timestamp, spatial resolution and missing data; a broad cloud region is not by itself a location exclusion |
 | Flightradar24, FlightAware | Flight history by registration; the paid tier can download KML/CSV tracks |
+
+Keep capture time and timezone distinct from posting time. Weather-station readings, satellite cloud pixels and the camera's visible sky describe different extents; preserve those limits in candidate comparisons. Treat unavailable archives as unknown. For phenology, retain uncertain species/cultivar, elevation and seasonal timing, and confirm with independent scene structure. Register time-dependent calculations on the board so a corrected premise makes them stale; [search review](search-review.md) describes the workflow.

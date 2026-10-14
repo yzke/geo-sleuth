@@ -109,11 +109,11 @@ Before a precise conclusion, run `board.py check --candidate <final-camera-point
 
 Strict report checks the merged result's `lat`, `lon` and `radius_m` against the selected candidate before writing. A stated radius of at most 100 m requires a point with a valid bounding box or center; a road's review cannot certify it. A known coordinate mismatch or skipped candidate level blocks the merge. These checks establish consistency of the exported claim, not the physical correctness of the radius. Strict failures leave an existing result file unchanged: do not consume that older file as a successful new report.
 
-When a date or other premise changes, revisit all derived solar/weather filters, candidate exclusions and comparisons; recompute them and record new checks. The board does not yet automatically trace every scientific dependency. In particular, sun azimuth plus 180 degrees is a reversed ray, not a general camera-heading formula; use the sun's image position and camera geometry.
+Register input clues with `--depends-on` and shared sources with `--group` as described in [search review](search-review.md). When a date or other premise changes, use `board.py revise`, revisit derived solar/weather filters, exclusions and comparisons, then recompute and record fresh evidence and checks. The board traces explicitly registered dependencies and reopens stale exclusions; it cannot automatically identify every scientific dependency. In particular, sun azimuth plus 180 degrees is a reversed ray, not a general camera-heading formula; use the sun's image position and camera geometry.
 
 ## 5. Lessons extracted from case narratives
 
-These are generalized workflow lessons from the contributor's methodology, not published photographs or GPS-ground-truth benchmarks:
+These are generalized workflow scenarios, not published photographs or GPS-ground-truth benchmarks:
 
 - **Hill scene with a sun and towers:** follow the line, distinguish side-by-side towers from successive towers, then test terrain and a hilltop structure. Corrected capture dates require a fresh solar/weather branch.
 - **Road, bridge, masts and waterway:** use left/right order, relative angles and river shape together. A promising visual resemblance remains a candidate while relationships are unresolved.

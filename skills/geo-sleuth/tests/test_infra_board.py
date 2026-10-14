@@ -25,6 +25,7 @@ class InfrastructureGateTests(unittest.TestCase):
                            ("evidence.jpg", "comparison panels")):
             (self.root / name).write_text(text, encoding="utf-8")
         self.run_board("init", "--photo", "photo.jpg")
+        self.run_board("context", "--none", "--why", "Synthetic infrastructure fixture has no associated case context")
         self.run_board("add", "A", "B", "--level", "point")
 
     def run_board(self, *args, ok=True, cwd=None):

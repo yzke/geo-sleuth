@@ -142,6 +142,14 @@ Entries use the shared format (`references/clues/README.md`); lookups: `clues.py
 
 ## Terrain and water
 
+### Flat agricultural or estuary scene: fields, channels, houses and turbine rows
+- Look for: open fields divided by drainage channels or levees, field roads, scattered village houses or shelterbelts, and wind turbines or pylons with a visible left/right or parallel relationship
+- Points to: a candidate scene type to investigate across plausible plains, coastal reclamation areas and estuary islands; include applicable case-context regions before comparing distant alternatives
+- Strength: weak for regional inference; relative road/channel/house/facility geometry can become a testable local constraint after map and ground-image comparison
+- Counterexamples: irrigated inland plains can show the same combination; roadside cut vegetation does not by itself establish a local craft industry or rule out another agricultural region; turbine presence or house color alone does not identify an island, province or city
+- How to check: search `<candidate region> 农田 风机` and the visible feature combination; compare field-road and channel directions, bridges, turbine alignment and houses between camera and facilities. Preserve farmland/waterway scan extents rather than narrowing automatically to built-up land. Compare facility counts only with consistent bounds, dates and definitions; missing map objects are unknown
+- Sources: generic search procedure, not a location-frequency claim; verify candidate-specific map imagery and source photos. See [search review](../../references/search-review.md)
+
 ### Mountains rising straight from the far bank of a big river, buildings stacked up the slopes
 - Look for: a very wide river with mountains several hundred meters high within one or two km of the far bank; houses climb the slope tier by tier
 - Points to: mountain river cities (central Chongqing, Yibin, Luzhou, and other Sichuan–Chongqing and upper-Yangtze cities); excludes plains cities on the middle and lower Yangtze (Wuhan, Jiujiang, Nanjing, Wuhu)
